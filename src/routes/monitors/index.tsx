@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
+import { runDetectorJob } from '~/lib/detector/run'
 
 const listMonitors = createServerFn({ method: 'GET' }).handler(async () => {
   if (!hasSupabaseConfig()) {
@@ -135,6 +136,21 @@ function MonitorsPage() {
             <div className="text-xs text-[var(--muted)] mt-1">
               Topics: {(m.topics || []).join(', ') || '—'}
             </div>
+            <button
+              type="button"
+              className="mt-2 text-xs underline text-[var(--accent-dim)]"
+              onClick={async () => {
+                setMsg('Running detector…')
+                const res = await runDetectorJob({ data: { monitorId: m.id } })
+                setMsg(
+                  res.ok
+                    ? `Detector done. Job ${res.jobId || ''} · ${res.newSignals ?? 0} new signals`
+                    : res.error || 'Failed',
+                )
+              }}
+            >
+              Run detector now
+            </button>
           </li>
         ))}
       </ul>

@@ -189,7 +189,7 @@ export const SKILLS: SkillDef[] = [
     description:
       'Build a monitoring profile: standing, beats, competitors, feeds, delivery.',
     whenToUse: 'First-time setup for ongoing newsjack monitoring.',
-    localOnly: true,
+    localOnly: false,
     inputs: [
       {
         id: 'company',
@@ -709,6 +709,104 @@ export const SKILLS: SkillDef[] = [
         type: 'textarea',
         required: true,
         rows: 12,
+      },
+    ],
+  },
+  {
+    slug: 'prompt-proximity-architecture',
+    name: 'Prompt Proximity Architecture',
+    category: 'ai-visibility',
+    icon: '🏗️',
+    description:
+      'Blueprint which prompt cells are required, optional, and prohibited before anyone writes prompt wording.',
+    whenToUse: 'Before writing AI-visibility prompts; after ICP / job analysis.',
+    inputs: [
+      {
+        id: 'brief',
+        label: 'Product + ICP brief (evidence-bound)',
+        placeholder: 'URL, category, buyer roles, proximity goals…',
+        type: 'textarea',
+        required: true,
+        rows: 10,
+      },
+    ],
+  },
+  {
+    slug: 'realistic-prompt-generation',
+    name: 'Realistic Prompt Generation',
+    category: 'ai-visibility',
+    icon: '💬',
+    description:
+      'Write natural prompt variants from a target-blind brief so the panel is not quietly written to flatter you.',
+    whenToUse: 'You have an architecture blueprint and need natural prompt wording.',
+    inputs: [
+      {
+        id: 'architecture',
+        label: 'Proximity architecture / cells to fill',
+        placeholder: 'Paste required cells and constraints…',
+        type: 'textarea',
+        required: true,
+        rows: 8,
+      },
+      {
+        id: 'blind_brief',
+        label: 'Target-blind brief (no brand flattery)',
+        placeholder: 'Category language buyers actually use…',
+        type: 'textarea',
+        required: true,
+        rows: 6,
+      },
+    ],
+  },
+  {
+    slug: 'prompt-set-qa',
+    name: 'Prompt Set QA',
+    category: 'ai-visibility',
+    icon: '🧪',
+    description:
+      'Gate the prompt set on provenance, contamination, answer leakage, naturalness, and semantic duplicates.',
+    whenToUse: 'Before locking a tracking panel; quarantine unsupported prompts.',
+    inputs: [
+      {
+        id: 'prompts',
+        label: 'Prompt set to QA',
+        placeholder: 'Paste candidate prompts…',
+        type: 'textarea',
+        required: true,
+        rows: 12,
+      },
+      {
+        id: 'evidence',
+        label: 'Evidence / provenance notes',
+        placeholder: 'What supports each prompt family…',
+        type: 'textarea',
+        rows: 6,
+      },
+    ],
+  },
+  {
+    slug: 'ai-visibility-panel-design',
+    name: 'AI Visibility Panel Design',
+    category: 'ai-visibility',
+    icon: '📐',
+    description:
+      'Select QA-approved prompts into a versioned tracking panel with partitions, surfaces, locales, weights, and refresh rules.',
+    whenToUse: 'Final step after prompt QA; human gate — no invented visibility score.',
+    inputs: [
+      {
+        id: 'approved_prompts',
+        label: 'QA-approved prompts',
+        placeholder: 'Paste approved set…',
+        type: 'textarea',
+        required: true,
+        rows: 10,
+      },
+      {
+        id: 'design_constraints',
+        label: 'Partitions / surfaces / locales / weights',
+        placeholder: 'Tracking design requirements…',
+        type: 'textarea',
+        rows: 6,
       },
     ],
   },

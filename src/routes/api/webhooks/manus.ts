@@ -2,11 +2,6 @@ import { createAPIFileRoute } from '@tanstack/react-start/api'
 import { handleManusWebhook } from '~/lib/jobs/webhook'
 import type { ManusWebhookEnvelope } from '~/lib/manus/client'
 
-/**
- * Manus webhook receiver.
- * Register: POST https://api.manus.ai/v2/webhook.create
- *   { "url": "https://YOUR_DOMAIN/api/webhooks/manus" }
- */
 export const APIRoute = createAPIFileRoute('/api/webhooks/manus')({
   POST: async ({ request }) => {
     const raw = await request.text()
@@ -20,10 +15,20 @@ export const APIRoute = createAPIFileRoute('/api/webhooks/manus')({
       })
     }
 
-    // Optional: verify X-Webhook-Signature / X-Webhook-Timestamp (RSA-SHA256)
-    // using manusPublicKey() — recommended in production.
+    const webhookUrl =
+      process.env.APP_URL
+        ? `${process.env.APP_URL.replace(/\/$/, '')}/api/webhooks/manus`
+        : request.url
 
-    const result = await handleManusWebhook(body, raw, request.headers)
+    const result = await handleManusWebhook(body, raw, request.headers, webhookUrl)
+
+    if (!result.ok && result.detail?.startsWith('signature')) {
+      return new Response(JSON.stringify(result), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
     return new Response(JSON.stringify(result), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

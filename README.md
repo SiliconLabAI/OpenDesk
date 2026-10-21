@@ -1,51 +1,50 @@
 # Newsjack Web (Full Mode)
 
-TanStack Start app that productizes [newsjack.sh](https://newsjack.sh) skills:
+TanStack Start + Supabase + Manus + Medialyst productization of [newsjack.sh](https://newsjack.sh) skills.
 
-| Layer | Role |
+## Implemented
+
+| Area | Status |
 | --- | --- |
-| **TanStack Start** | UI, server functions, `/api/webhooks/manus` |
-| **Supabase** | Orgs, clients, monitors, seen-state, jobs, artifacts |
-| **Manus API** | Browser worker for `press-clip` & `coverage-reel` |
-| **Anthropic / OpenAI** | Sync skill runs (angles, fact-check, …) |
-
-## Flow (browser jobs)
-
-```
-UI → startPressClipJob / startCoverageReelJob
-   → Manus task.create (Playwright connector)
-   → jobs row status=waiting_manus
-   → Manus POST /api/webhooks/manus
-   → listMessages + artifacts → status=completed
-```
+| All 31 README skills in catalog | Yes (incl. 4 AI-visibility skills) |
+| SKILL.md doctrine prompts | angle, fact-check, newsworthiness, meanest-editor, detector, triage, crisis, … |
+| Medialyst | news-search, pr-calendar, find-journalists, detector/coverage context |
+| Detector pipeline | news → seen-state → LLM judge → jobs + optional Slack |
+| Cron | `POST /api/cron/detector` with `CRON_SECRET` |
+| Manus browser jobs | press-clip / coverage-reel + webhook RSA verify + Storage upload |
+| Auth RLS | migration `002_auth_rls.sql` |
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
+# Run supabase/migrations/001_full_mode.sql and 002_auth_rls.sql
+npm run dev
 ```
 
-1. Supabase: run `supabase/migrations/001_full_mode.sql`
-2. Env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MANUS_API_KEY`
-3. Register webhook (public HTTPS URL required):
+### Env
+
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` — skill + detector LLM
+- `SUPABASE_*` — durable state
+- `MEDIALYST_API_KEY` — live news / calendar / journalists
+- `MANUS_API_KEY` + `APP_URL` — browser worker
+- `CRON_SECRET` — protect detector cron
+
+### Cron
+
+```bash
+curl -X POST "$APP_URL/api/cron/detector" \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+### Manus webhook
 
 ```bash
 curl -X POST https://api.manus.ai/v2/webhook.create \
   -H "x-manus-api-key: $MANUS_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"url\":\"https://YOUR_HOST/api/webhooks/manus\"}"
+  -d "{\"url\":\"$APP_URL/api/webhooks/manus\"}"
 ```
 
-```bash
-npm run dev
-```
-
-## Routes
-
-- `/tools/$slug` — skills (press-clip / coverage-reel start Manus jobs)
-- `/monitors` — durable monitor profiles
-- `/runs` — job history + artifacts
-- `/api/webhooks/manus` — Manus callbacks
-
-Upstream: [elvisun/newsjack](https://github.com/elvisun/newsjack).
+Upstream skills: [elvisun/newsjack](https://github.com/elvisun/newsjack).
