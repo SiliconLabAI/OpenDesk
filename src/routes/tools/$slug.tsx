@@ -6,10 +6,11 @@ import {
   startCoverageReelJob,
   startPressClipJob,
 } from '~/lib/jobs/browser'
-import { loadProfile, profileToPromptBlock } from '~/lib/profile'
+import { saveProfile, loadProfile, profileToPromptBlock } from '~/lib/profile'
 import { loadSettings } from '~/lib/settings/client'
 import { enrichSkillInputs, researchFromWebsite } from '~/lib/auto/research'
 import { Markdown } from '~/components/Markdown'
+
 
 export const Route = createFileRoute('/tools/$slug')({
   component: ToolPage,
