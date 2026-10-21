@@ -1,9 +1,10 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
 import { runDetectorJob } from '~/lib/detector/run'
+import { loadSettings } from '~/lib/settings/client'
 
 const listMonitors = createServerFn({ method: 'GET' }).handler(async () => {
   if (!hasSupabaseConfig()) {
@@ -32,7 +33,8 @@ const createMonitor = createServerFn({ method: 'POST' })
     if (!hasSupabaseConfig()) {
       return { ok: false as const, error: 'Supabase not configured' }
     }
-    const orgId = process.env.DEFAULT_ORG_ID || '00000000-0000-0000-0000-000000000001'
+    const orgId =
+      process.env.DEFAULT_ORG_ID || '00000000-0000-0000-0000-000000000001'
     const sb = getServiceSupabase()
     await sb.from('orgs').upsert({ id: orgId, name: 'Default' }, { onConflict: 'id' })
 
@@ -69,6 +71,20 @@ const createMonitor = createServerFn({ method: 'POST' })
     return { ok: true as const }
   })
 
+const deleteMonitor = createServerFn({ method: 'POST' })
+  .validator(z.object({ id: z.string().uuid() }))
+  .handler(async ({ data }) => {
+    if (!hasSupabaseConfig()) {
+      return { ok: false as const, error: 'Supabase not configured' }
+    }
+    const sb = getServiceSupabase()
+    // Soft-clean related seen signals for this monitor
+    await sb.from('seen_signals').delete().eq('monitor_id', data.id)
+    const { error } = await sb.from('monitors').delete().eq('id', data.id)
+    if (error) return { ok: false as const, error: error.message }
+    return { ok: true as const }
+  })
+
 export const Route = createFileRoute('/monitors/')({
   loader: () => listMonitors(),
   component: MonitorsPage,
@@ -76,6 +92,7 @@ export const Route = createFileRoute('/monitors/')({
 
 function MonitorsPage() {
   const data = Route.useLoaderData()
+  const router = useRouter()
   const [title, setTitle] = useState('')
   const [slug, setSlug] = useState('')
   const [clientName, setClientName] = useState('')
@@ -94,7 +111,14 @@ function MonitorsPage() {
       },
     })
     setMsg(res.ok ? 'Monitor saved.' : res.error || 'Failed')
-    if (res.ok) window.location.reload()
+    if (res.ok) router.invalidate()
+  }
+
+  async function onDelete(id: string, title: string) {
+    if (!confirm(`Remove monitor “${title}”? This cannot be undone.`)) return
+    const res = await deleteMonitor({ data: { id } })
+    setMsg(res.ok ? 'Monitor removed.' : res.error || 'Delete failed')
+    if (res.ok) router.invalidate()
   }
 
   return (
@@ -102,8 +126,8 @@ function MonitorsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Monitors</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          Full Mode monitoring profiles (newsjack-monitor-setup). Persist topics and schedule
-          in Supabase; wire cron to enqueue detector jobs.
+          Full Mode monitoring profiles. Detector uses Settings (LLM + Medialyst or
+          Manus fallback) when you run a job.
         </p>
       </div>
 
@@ -112,51 +136,85 @@ function MonitorsPage() {
       )}
 
       <ul className="space-y-2">
-        {(data.monitors || []).map((m: {
-          id: string
-          title: string
-          slug: string
-          enabled: boolean
-          schedule_cron: string
-          topics: string[]
-          clients?: { name: string } | null
-        }) => (
-          <li
-            key={m.id}
-            className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"
-          >
-            <div className="font-medium">
-              {m.title}{' '}
-              <span className="text-xs text-[var(--muted)]">/{m.slug}</span>
-            </div>
-            <div className="text-sm text-[var(--muted)] mt-1">
-              Client: {m.clients?.name || '—'} · cron {m.schedule_cron} ·{' '}
-              {m.enabled ? 'enabled' : 'paused'}
-            </div>
-            <div className="text-xs text-[var(--muted)] mt-1">
-              Topics: {(m.topics || []).join(', ') || '—'}
-            </div>
-            <button
-              type="button"
-              className="mt-2 text-xs underline text-[var(--accent-dim)]"
-              onClick={async () => {
-                setMsg('Running detector…')
-                const res = await runDetectorJob({ data: { monitorId: m.id } })
-                setMsg(
-                  res.ok
-                    ? `Detector done. Job ${res.jobId || ''} · ${res.newSignals ?? 0} new signals`
-                    : res.error || 'Failed',
-                )
-              }}
+        {(data.monitors || []).map(
+          (m: {
+            id: string
+            title: string
+            slug: string
+            enabled: boolean
+            schedule_cron: string
+            topics: string[]
+            clients?: { name: string } | null
+          }) => (
+            <li
+              key={m.id}
+              className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"
             >
-              Run detector now
-            </button>
-          </li>
-        ))}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-medium">
+                    {m.title}{' '}
+                    <span className="text-xs text-[var(--muted)]">/{m.slug}</span>
+                  </div>
+                  <div className="text-sm text-[var(--muted)] mt-1">
+                    Client: {m.clients?.name || '—'} · cron {m.schedule_cron} ·{' '}
+                    {m.enabled ? 'enabled' : 'paused'}
+                  </div>
+                  <div className="text-xs text-[var(--muted)] mt-1">
+                    Topics: {(m.topics || []).join(', ') || '—'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="text-xs text-red-400/90 hover:text-red-300 shrink-0"
+                  onClick={() => onDelete(m.id, m.title)}
+                >
+                  Remove
+                </button>
+              </div>
+              <button
+                type="button"
+                className="mt-2 text-xs underline text-[var(--accent-dim)]"
+                onClick={async () => {
+                  setMsg('Running detector…')
+                  const res = await runDetectorJob({
+                    data: {
+                      monitorId: m.id,
+                      settings: loadSettings(),
+                    },
+                  })
+                  setMsg(
+                    res.ok
+                      ? `Detector done. Job ${res.jobId || ''} · ${res.newSignals ?? 0} new signals`
+                      : res.error || 'Failed',
+                  )
+                }}
+              >
+                Run detector now
+              </button>
+            </li>
+          ),
+        )}
       </ul>
 
-      <form onSubmit={onCreate} className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+      <form
+        onSubmit={onCreate}
+        className="space-y-3 rounded-xl border border-[var(--border)] p-4"
+      >
         <h2 className="font-semibold">New monitor</h2>
+        <input
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+          placeholder="Title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          required
+        />
+        <input
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+          placeholder="Slug (optional)"
+          value={slug}
+          onChange={(e) => setSlug(e.target.value)}
+        />
         <input
           className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
           placeholder="Client name"
@@ -164,22 +222,10 @@ function MonitorsPage() {
           onChange={(e) => setClientName(e.target.value)}
           required
         />
-        <input
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="Monitor title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
-        />
-        <input
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="slug (optional)"
-          value={slug}
-          onChange={(e) => setSlug(e.target.value)}
-        />
         <textarea
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm min-h-[5rem]"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
           placeholder="Topics (comma or newline separated)"
+          rows={3}
           value={topics}
           onChange={(e) => setTopics(e.target.value)}
         />
@@ -188,10 +234,11 @@ function MonitorsPage() {
           className="rounded-lg px-4 py-2 text-sm font-semibold"
           style={{ background: 'var(--accent)', color: '#0a0a0b' }}
         >
-          Save monitor
+          Create monitor
         </button>
-        {msg && <p className="text-sm text-[var(--muted)]">{msg}</p>}
       </form>
+
+      {msg && <p className="text-sm text-[var(--muted)]">{msg}</p>}
     </div>
   )
 }

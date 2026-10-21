@@ -78,7 +78,7 @@ export function offlineDemoResult(
   return [
     `## ${skill.name} — offline scaffold`,
     '',
-    'No LLM API key configured. Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.',
+    'No LLM configured. Open **Settings** and add Anthropic, OpenAI, or an OpenAI-compatible endpoint (base URL + model), or set env vars.',
     '',
     `Doctrine for this skill is loaded from newsjack SKILL.md condensations (${skill.slug}).`,
     '',

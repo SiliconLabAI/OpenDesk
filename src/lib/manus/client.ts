@@ -1,12 +1,12 @@
 /**
  * Manus API v2 client — browser worker for press-clip / coverage-reel.
- * Docs: https://open.manus.ai/docs/v2/introduction
  */
 
 const BASE = 'https://api.manus.ai'
 
-/** Playwright connector UUID (cloud browser automation). */
 export const MANUS_PLAYWRIGHT_CONNECTOR = '356d5bc1-fb9f-4fa1-babb-05039dc09d63'
+
+export type ManusCtx = { apiKey?: string }
 
 export type ManusCreateTaskResult = {
   ok: boolean
@@ -32,24 +32,27 @@ export type ManusWebhookEnvelope = {
   [key: string]: unknown
 }
 
-function apiKey(): string {
-  const k = process.env.MANUS_API_KEY
-  if (!k) throw new Error('MANUS_API_KEY is not set')
+function resolveKey(ctx?: ManusCtx): string {
+  const k = ctx?.apiKey || process.env.MANUS_API_KEY
+  if (!k) throw new Error('MANUS_API_KEY is not set (add it in Settings or env)')
   return k
 }
 
-export function hasManusConfig(): boolean {
-  return Boolean(process.env.MANUS_API_KEY)
+export function hasManusConfig(ctx?: ManusCtx): boolean {
+  return Boolean(ctx?.apiKey || process.env.MANUS_API_KEY)
 }
 
-export async function manusCreateTask(opts: {
-  prompt: string
-  title?: string
-  connectors?: string[]
-  agentProfile?: 'standard' | 'lite' | 'max'
-  structuredOutputSchema?: Record<string, unknown>
-  hideInTaskList?: boolean
-}): Promise<ManusCreateTaskResult> {
+export async function manusCreateTask(
+  opts: {
+    prompt: string
+    title?: string
+    connectors?: string[]
+    agentProfile?: 'standard' | 'lite' | 'max'
+    structuredOutputSchema?: Record<string, unknown>
+    hideInTaskList?: boolean
+  },
+  ctx?: ManusCtx,
+): Promise<ManusCreateTaskResult> {
   const body: Record<string, unknown> = {
     message: {
       content: opts.prompt,
@@ -68,7 +71,7 @@ export async function manusCreateTask(opts: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-manus-api-key': apiKey(),
+      'x-manus-api-key': resolveKey(ctx),
     },
     body: JSON.stringify(body),
   })
@@ -81,13 +84,17 @@ export async function manusCreateTask(opts: {
   return data
 }
 
-export async function manusListMessages(taskId: string, limit = 20) {
+export async function manusListMessages(
+  taskId: string,
+  limit = 20,
+  ctx?: ManusCtx,
+) {
   const url = new URL(`${BASE}/v2/task.listMessages`)
   url.searchParams.set('task_id', taskId)
   url.searchParams.set('order', 'desc')
   url.searchParams.set('limit', String(limit))
   const res = await fetch(url, {
-    headers: { 'x-manus-api-key': apiKey() },
+    headers: { 'x-manus-api-key': resolveKey(ctx) },
   })
   if (!res.ok) {
     throw new Error(`Manus listMessages failed (${res.status})`)
@@ -95,32 +102,36 @@ export async function manusListMessages(taskId: string, limit = 20) {
   return res.json()
 }
 
-export async function manusRegisterWebhook(callbackUrl: string) {
+export async function manusRegisterWebhook(
+  callbackUrl: string,
+  ctx?: ManusCtx,
+) {
   const res = await fetch(`${BASE}/v2/webhook.create`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-manus-api-key': apiKey(),
+      'x-manus-api-key': resolveKey(ctx),
     },
     body: JSON.stringify({ url: callbackUrl }),
   })
   const data = await res.json()
   if (!res.ok || data.ok === false) {
-    throw new Error(data.error?.message || `Manus webhook.create failed`)
+    throw new Error(
+      data.error?.message || `Manus webhook.create failed (${res.status})`,
+    )
   }
   return data
 }
 
-export async function manusPublicKey(): Promise<string> {
+export async function manusPublicKey(ctx?: ManusCtx): Promise<string> {
   const res = await fetch(`${BASE}/v2/webhook.publicKey`, {
-    headers: { 'x-manus-api-key': apiKey() },
+    headers: { 'x-manus-api-key': resolveKey(ctx) },
   })
   if (!res.ok) throw new Error('Failed to fetch Manus webhook public key')
   const data = await res.json()
   return data.public_key || data.publicKey || data.key || JSON.stringify(data)
 }
 
-/** Best-effort extract of file URLs / final text from listMessages payload */
 export function extractManusResults(messagesPayload: unknown): {
   text: string
   fileUrls: string[]
@@ -136,11 +147,15 @@ export function extractManusResults(messagesPayload: unknown): {
     const o = node as Record<string, unknown>
     if (typeof o.fileUrl === 'string') fileUrls.push(o.fileUrl)
     if (typeof o.file_url === 'string') fileUrls.push(o.file_url)
-    if (typeof o.url === 'string' && /\.(pdf|mp4|webm|png|jpg)(\?|$)/i.test(o.url)) {
+    if (
+      typeof o.url === 'string' &&
+      /\.(pdf|mp4|webm|png|jpg)(\?|$)/i.test(o.url)
+    ) {
       fileUrls.push(o.url)
     }
     if (typeof o.text === 'string' && o.text.length > 40) texts.push(o.text)
-    if (typeof o.content === 'string' && o.content.length > 40) texts.push(o.content)
+    if (typeof o.content === 'string' && o.content.length > 40)
+      texts.push(o.content)
     Object.values(o).forEach(walk)
   }
   walk(messagesPayload)

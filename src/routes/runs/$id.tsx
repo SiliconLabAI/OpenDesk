@@ -2,6 +2,7 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
+import { Markdown } from '~/components/Markdown'
 
 const loadJob = createServerFn({ method: 'GET' })
   .validator(z.object({ id: z.string() }))
@@ -82,8 +83,8 @@ function RunDetailPage() {
       {job.output_text && (
         <section className="space-y-2">
           <h2 className="font-semibold">Output</h2>
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4 prose-output text-sm">
-            {job.output_text}
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <Markdown content={job.output_text} />
           </div>
         </section>
       )}

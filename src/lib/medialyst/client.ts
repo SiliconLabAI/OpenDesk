@@ -1,31 +1,36 @@
 /**
  * Medialyst public REST API client.
- * Docs: https://medialyst.ai/docs/developers/mcp-agent-skill
- * Base: https://api.medialyst.ai (or as configured)
  */
 
-const BASE =
-  process.env.MEDIALYST_API_BASE?.replace(/\/$/, '') ||
-  'https://api.medialyst.ai'
+export type MedialystCtx = { apiKey?: string; baseUrl?: string }
 
-function apiKey(): string | null {
-  return process.env.MEDIALYST_API_KEY || null
+function resolveBase(ctx?: MedialystCtx): string {
+  return (
+    ctx?.baseUrl?.replace(/\/$/, '') ||
+    process.env.MEDIALYST_API_BASE?.replace(/\/$/, '') ||
+    'https://api.medialyst.ai'
+  )
 }
 
-export function hasMedialystConfig(): boolean {
-  return Boolean(apiKey())
+function resolveKey(ctx?: MedialystCtx): string | null {
+  return ctx?.apiKey || process.env.MEDIALYST_API_KEY || null
+}
+
+export function hasMedialystConfig(ctx?: MedialystCtx): boolean {
+  return Boolean(resolveKey(ctx))
 }
 
 async function medialystFetch<T>(
   path: string,
   init?: RequestInit,
+  ctx?: MedialystCtx,
 ): Promise<{ ok: true; data: T } | { ok: false; error: string; status: number }> {
-  const key = apiKey()
+  const key = resolveKey(ctx)
   if (!key) {
     return { ok: false, error: 'MEDIALYST_API_KEY not set', status: 0 }
   }
   try {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(`${resolveBase(ctx)}${path}`, {
       ...init,
       headers: {
         Authorization: `Bearer ${key}`,
@@ -68,71 +73,75 @@ export type NewsArticle = {
   [key: string]: unknown
 }
 
-/** POST /api/v1/news/search */
-export async function searchNews(opts: {
-  query: string
-  limit?: number
-  recency?: string
-}): Promise<{ ok: true; articles: NewsArticle[]; raw: unknown } | { ok: false; error: string }> {
+export async function searchNews(
+  opts: { query: string; limit?: number; recency?: string },
+  ctx?: MedialystCtx,
+) {
   const body: Record<string, unknown> = {
     query: opts.query,
     limit: opts.limit ?? 20,
   }
   if (opts.recency) body.recency = opts.recency
 
-  const res = await medialystFetch<unknown>('/api/v1/news/search', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-  if (!res.ok) return { ok: false, error: res.error }
+  const res = await medialystFetch<unknown>(
+    '/api/v1/news/search',
+    { method: 'POST', body: JSON.stringify(body) },
+    ctx,
+  )
+  if (!res.ok) return { ok: false as const, error: res.error }
 
-  const raw = res.data
-  const articles = normalizeArticles(raw)
-  return { ok: true, articles, raw }
+  return {
+    ok: true as const,
+    articles: normalizeArticles(res.data),
+    raw: res.data,
+  }
 }
 
-/** POST /api/v1/pr-calendar/query */
-export async function queryPrCalendar(opts: {
-  query: string
-  horizon?: string
-}): Promise<{ ok: true; events: unknown[]; raw: unknown } | { ok: false; error: string }> {
-  const res = await medialystFetch<unknown>('/api/v1/pr-calendar/query', {
-    method: 'POST',
-    body: JSON.stringify({
-      query: opts.query,
-      horizon: opts.horizon,
-    }),
-  })
-  if (!res.ok) return { ok: false, error: res.error }
+export async function queryPrCalendar(
+  opts: { query: string; horizon?: string },
+  ctx?: MedialystCtx,
+) {
+  const res = await medialystFetch<unknown>(
+    '/api/v1/pr-calendar/query',
+    {
+      method: 'POST',
+      body: JSON.stringify({ query: opts.query, horizon: opts.horizon }),
+    },
+    ctx,
+  )
+  if (!res.ok) return { ok: false as const, error: res.error }
   const raw = res.data as { events?: unknown[]; data?: unknown[] }
   const events = raw.events || raw.data || (Array.isArray(raw) ? raw : [])
-  return { ok: true, events: events as unknown[], raw }
+  return { ok: true as const, events: events as unknown[], raw: res.data }
 }
 
-/** POST /api/v1/journalists/enrich or lookup */
-export async function lookupJournalists(opts: {
-  query?: string
-  names?: string[]
-  article_url?: string
-}): Promise<{ ok: true; journalists: unknown[]; raw: unknown } | { ok: false; error: string }> {
-  const res = await medialystFetch<unknown>('/api/v1/journalists/lookup', {
-    method: 'POST',
-    body: JSON.stringify(opts),
-  })
+export async function lookupJournalists(
+  opts: { query?: string; names?: string[]; article_url?: string },
+  ctx?: MedialystCtx,
+) {
+  const res = await medialystFetch<unknown>(
+    '/api/v1/journalists/lookup',
+    { method: 'POST', body: JSON.stringify(opts) },
+    ctx,
+  )
   if (!res.ok) {
-    // fallback enrich
-    const res2 = await medialystFetch<unknown>('/api/v1/journalists/enrich', {
-      method: 'POST',
-      body: JSON.stringify(opts),
-    })
-    if (!res2.ok) return { ok: false, error: res2.error }
+    const res2 = await medialystFetch<unknown>(
+      '/api/v1/journalists/enrich',
+      { method: 'POST', body: JSON.stringify(opts) },
+      ctx,
+    )
+    if (!res2.ok) return { ok: false as const, error: res2.error }
     return {
-      ok: true,
+      ok: true as const,
       journalists: normalizeList(res2.data),
       raw: res2.data,
     }
   }
-  return { ok: true, journalists: normalizeList(res.data), raw: res.data }
+  return {
+    ok: true as const,
+    journalists: normalizeList(res.data),
+    raw: res.data,
+  }
 }
 
 function normalizeList(raw: unknown): unknown[] {

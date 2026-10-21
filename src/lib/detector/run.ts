@@ -3,79 +3,107 @@ import { z } from 'zod'
 import { doctrineFor } from '~/lib/skills/doctrine'
 import {
   formatArticlesForPrompt,
-  hasMedialystConfig,
   searchNews,
 } from '~/lib/medialyst/client'
+import { callLlm } from '~/lib/llm/client'
+import { resolveSettings } from '~/lib/settings/resolve'
+import type { ProviderSettings } from '~/lib/settings/types'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
+import {
+  hasManusConfig,
+  manusCreateTask,
+  manusListMessages,
+  extractManusResults,
+} from '~/lib/manus/client'
 
-const DEFAULT_ORG = '00000000-0000-0000-0000-000000000001'
-
-async function callLlm(system: string, user: string): Promise<string> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
-        max_tokens: 4096,
-        system,
-        messages: [{ role: 'user', content: user }],
-      }),
-    })
-    if (!res.ok) throw new Error(`Anthropic ${res.status}`)
-    const data = (await res.json()) as {
-      content?: Array<{ type: string; text?: string }>
-    }
-    return (
-      data.content
-        ?.filter((c) => c.type === 'text')
-        .map((c) => c.text)
-        .join('\n')
-        .trim() || ''
-    )
-  }
-  if (process.env.OPENAI_API_KEY) {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
-        temperature: 0.3,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-    })
-    if (!res.ok) throw new Error(`OpenAI ${res.status}`)
-    const data = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-    }
-    return data.choices?.[0]?.message?.content?.trim() || ''
-  }
-  throw new Error('No ANTHROPIC_API_KEY or OPENAI_API_KEY configured')
-}
+const SettingsPartial = z
+  .object({
+    preferredLlm: z
+      .enum(['auto', 'anthropic', 'openai', 'openai_compatible'])
+      .optional(),
+    anthropicApiKey: z.string().optional(),
+    anthropicModel: z.string().optional(),
+    openaiApiKey: z.string().optional(),
+    openaiModel: z.string().optional(),
+    openaiBaseUrl: z.string().optional(),
+    openaiCompatibleEnabled: z.boolean().optional(),
+    openaiCompatibleBaseUrl: z.string().optional(),
+    openaiCompatibleApiKey: z.string().optional(),
+    openaiCompatibleModel: z.string().optional(),
+    medialystApiKey: z.string().optional(),
+    medialystApiBase: z.string().optional(),
+    manusApiKey: z.string().optional(),
+    appUrl: z.string().optional(),
+    slackWebhookUrl: z.string().optional(),
+  })
+  .optional()
 
 function fingerprint(title: string, url?: string): string {
   const base = `${(url || '').toLowerCase().trim()}|${title.toLowerCase().trim()}`
-  // simple stable hash
   let h = 0
   for (let i = 0; i < base.length; i++) h = (Math.imul(31, h) + base.charCodeAt(i)) | 0
   return `fp_${Math.abs(h).toString(36)}_${base.slice(0, 40).replace(/\W+/g, '_')}`
 }
 
-/**
- * Full Mode detector pass for one monitor:
- * news fetch → coarse filter → triage/judge → persist seen_signals + job
- */
-export async function runDetectorForMonitor(monitorId: string): Promise<{
+async function fetchNewsViaManus(
+  topics: string[],
+  settings: ProviderSettings,
+): Promise<{ articles: Array<{ title: string; url?: string; outlet?: string; published_at?: string; snippet?: string }>; note: string }> {
+  if (!hasManusConfig({ apiKey: settings.manusApiKey || undefined })) {
+    return { articles: [], note: 'No Medialyst and no Manus — LLM will judge profile-only context.' }
+  }
+  const prompt = `You are a news research agent for a PR tool.
+
+Search the live web for recent news (last 7–14 days) about these topics:
+${topics.map((t) => `- ${t}`).join('\n')}
+
+Return a concise markdown list of up to 15 articles. For each item include:
+- Title
+- Outlet
+- Approximate publish date (ISO if possible)
+- URL
+- One-line snippet
+
+Only real articles you can verify from search. Do not invent URLs.`
+
+  try {
+    const task = await manusCreateTask(
+      {
+        title: `newsjack news research: ${topics[0] || 'topics'}`,
+        prompt,
+        agentProfile: 'lite',
+      },
+      { apiKey: settings.manusApiKey || undefined },
+    )
+    // Best-effort poll once for quick text (webhook still handles long jobs elsewhere)
+    await new Promise((r) => setTimeout(r, 8000))
+    let text = ''
+    try {
+      const msgs = await manusListMessages(task.task_id, 10, {
+        apiKey: settings.manusApiKey || undefined,
+      })
+      text = extractManusResults(msgs).text
+    } catch {
+      text = ''
+    }
+    return {
+      articles: [],
+      note: text
+        ? `Manus research (task ${task.task_id}):\n${text}`
+        : `Manus task started: ${task.task_id} (${task.task_url || 'no url'}). Results may still be running — check Manus or Runs after webhook.`,
+    }
+  } catch (e) {
+    return {
+      articles: [],
+      note: `Manus research failed: ${e instanceof Error ? e.message : String(e)}`,
+    }
+  }
+}
+
+export async function runDetectorForMonitor(
+  monitorId: string,
+  clientSettings?: Partial<ProviderSettings> | null,
+): Promise<{
   ok: boolean
   jobId?: string
   output?: string
@@ -85,6 +113,7 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
   if (!hasSupabaseConfig()) {
     return { ok: false, error: 'Supabase not configured' }
   }
+  const settings = resolveSettings(clientSettings)
   const sb = getServiceSupabase()
 
   const { data: monitor, error: mErr } = await sb
@@ -107,7 +136,6 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
     ? monitor.topics
     : [client?.name || monitor.title].filter(Boolean)
 
-  // 1) Fetch news per topic
   const allArticles: Array<{
     title: string
     url?: string
@@ -116,11 +144,15 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
     snippet?: string
   }> = []
   let newsSource = 'none'
+  let manusNote = ''
 
-  if (hasMedialystConfig()) {
+  if (settings.medialystApiKey) {
     newsSource = 'medialyst'
     for (const topic of topics.slice(0, 5)) {
-      const res = await searchNews({ query: topic, limit: 15, recency: '7d' })
+      const res = await searchNews(
+        { query: topic, limit: 15, recency: '7d' },
+        { apiKey: settings.medialystApiKey, baseUrl: settings.medialystApiBase },
+      )
       if (res.ok) {
         for (const a of res.articles) {
           if (a.title) {
@@ -135,9 +167,12 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
         }
       }
     }
+  } else {
+    newsSource = 'manus_fallback'
+    const man = await fetchNewsViaManus(topics, settings)
+    manusNote = man.note
   }
 
-  // Dedupe against seen_signals
   const { data: seenRows } = await sb
     .from('seen_signals')
     .select('fingerprint')
@@ -145,13 +180,14 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
     .eq('monitor_id', monitorId)
     .limit(5000)
 
-  const seen = new Set((seenRows || []).map((r: { fingerprint: string }) => r.fingerprint))
+  const seen = new Set(
+    (seenRows || []).map((r: { fingerprint: string }) => r.fingerprint),
+  )
   const fresh = allArticles.filter((a) => {
     const fp = fingerprint(a.title, a.url)
     return !seen.has(fp)
   })
 
-  // 2–3) Coarse filter + triage via LLM
   const profileBlock = [
     `Client: ${client?.name || 'unknown'}`,
     client?.standing ? `Standing:\n${client.standing}` : null,
@@ -167,26 +203,28 @@ export async function runDetectorForMonitor(monitorId: string): Promise<{
     fresh.length > 0
       ? formatArticlesForPrompt(fresh)
       : allArticles.length > 0
-        ? '(all fetched articles already seen)\n' + formatArticlesForPrompt(allArticles.slice(0, 10))
-        : '(no articles fetched — Medialyst not configured or empty results; judge any user-pasted context only)'
+        ? '(all fetched articles already seen)\n' +
+          formatArticlesForPrompt(allArticles.slice(0, 10))
+        : manusNote ||
+          '(no articles fetched — configure Medialyst or Manus in Settings)'
 
   const system = doctrineFor('newsjack-detector')
   const user = `## Client / monitor profile
 ${profileBlock}
 
-## Candidate signals (fresh first)
+## Candidate signals
 ${headlinesBlock}
 
-Run coarse relevance + triage + detector judgment. Persist-ready: list each signal with fingerprint-friendly title/url and verdict.`
+Run coarse relevance + triage + detector judgment.`
 
   let outputText: string
   try {
-    outputText = await callLlm(system, user)
+    const { text, provider } = await callLlm(settings, system, user)
+    outputText = `_(judge via ${provider})_\n\n${text}`
   } catch (e) {
-    outputText = `## Detector offline scaffold\n\n${e instanceof Error ? e.message : String(e)}\n\n### Candidates\n${headlinesBlock}`
+    outputText = `## Detector offline\n\n${e instanceof Error ? e.message : String(e)}\n\n### Candidates\n${headlinesBlock}`
   }
 
-  // 4) Persist job + mark seen
   const { data: job, error: jErr } = await sb
     .from('jobs')
     .insert({
@@ -239,8 +277,22 @@ Run coarse relevance + triage + detector judgment. Persist-ready: list each sign
     .update({ last_run_at: new Date().toISOString() })
     .eq('id', monitorId)
 
-  // Optional Slack
-  await maybeSlackNotify(monitor.org_id, monitor.title, outputText)
+  const slack =
+    settings.slackWebhookUrl ||
+    undefined
+  if (slack?.startsWith('https://')) {
+    try {
+      await fetch(slack, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `*Newsjack detector — ${monitor.title}*\n${outputText.slice(0, 3500)}`,
+        }),
+      })
+    } catch {
+      /* ignore */
+    }
+  }
 
   return {
     ok: true,
@@ -250,36 +302,24 @@ Run coarse relevance + triage + detector judgment. Persist-ready: list each sign
   }
 }
 
-async function maybeSlackNotify(orgId: string, title: string, body: string) {
-  if (!hasSupabaseConfig()) return
-  const sb = getServiceSupabase()
-  const { data: secret } = await sb
-    .from('secrets')
-    .select('value_ciphertext')
-    .eq('org_id', orgId)
-    .eq('name', 'slack_webhook')
-    .maybeSingle()
-  const url = secret?.value_ciphertext
-  if (!url || !url.startsWith('https://')) return
-  try {
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: `*Newsjack detector — ${title}*\n${body.slice(0, 3500)}`,
-      }),
-    })
-  } catch {
-    // ignore
-  }
-}
-
 export const runDetectorJob = createServerFn({ method: 'POST' })
-  .validator(z.object({ monitorId: z.string().uuid() }))
-  .handler(async ({ data }) => runDetectorForMonitor(data.monitorId))
+  .validator(
+    z.object({
+      monitorId: z.string().uuid(),
+      settings: SettingsPartial,
+    }),
+  )
+  .handler(async ({ data }) =>
+    runDetectorForMonitor(data.monitorId, data.settings),
+  )
 
 export const runAllEnabledMonitors = createServerFn({ method: 'POST' })
-  .validator(z.object({ cronSecret: z.string().optional() }))
+  .validator(
+    z.object({
+      cronSecret: z.string().optional(),
+      settings: SettingsPartial,
+    }),
+  )
   .handler(async ({ data }) => {
     const expected = process.env.CRON_SECRET
     if (expected && data.cronSecret !== expected) {
@@ -296,7 +336,7 @@ export const runAllEnabledMonitors = createServerFn({ method: 'POST' })
       .limit(50)
     const results = []
     for (const m of monitors || []) {
-      results.push(await runDetectorForMonitor(m.id))
+      results.push(await runDetectorForMonitor(m.id, data.settings))
     }
     return { ok: true as const, results }
   })

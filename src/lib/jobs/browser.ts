@@ -14,6 +14,7 @@ const PressClipInput = z.object({
   url: z.string().url(),
   mention: z.string().min(1),
   brandNotes: z.string().optional(),
+  manusApiKey: z.string().optional(),
 })
 
 const CoverageReelInput = z.object({
@@ -22,6 +23,7 @@ const CoverageReelInput = z.object({
   notes: z.string().min(10),
   brandNotes: z.string().optional(),
   formats: z.string().optional(),
+  manusApiKey: z.string().optional(),
 })
 
 const DEFAULT_ORG = '00000000-0000-0000-0000-000000000001'
@@ -35,11 +37,12 @@ async function ensureDemoOrg(orgId: string) {
 export const startPressClipJob = createServerFn({ method: 'POST' })
   .validator(PressClipInput)
   .handler(async ({ data }) => {
-    if (!hasManusConfig()) {
+    const manusCtx = data.manusApiKey ? { apiKey: data.manusApiKey } : undefined
+    if (!hasManusConfig(manusCtx)) {
       return {
         ok: false as const,
         error:
-          'MANUS_API_KEY not configured. Set it to run press-clip via Manus browser worker.',
+          'MANUS_API_KEY not configured. Add it in Settings or env.',
         jobId: null as string | null,
       }
     }
@@ -55,7 +58,7 @@ export const startPressClipJob = createServerFn({ method: 'POST' })
       title: `press-clip: ${data.mention}`,
       prompt,
       structuredOutputSchema: PRESS_CLIP_SCHEMA as unknown as Record<string, unknown>,
-    })
+    }, manusCtx)
 
     let jobId: string | null = null
     if (hasSupabaseConfig()) {
@@ -104,10 +107,11 @@ export const startPressClipJob = createServerFn({ method: 'POST' })
 export const startCoverageReelJob = createServerFn({ method: 'POST' })
   .validator(CoverageReelInput)
   .handler(async ({ data }) => {
-    if (!hasManusConfig()) {
+    const manusCtx = data.manusApiKey ? { apiKey: data.manusApiKey } : undefined
+    if (!hasManusConfig(manusCtx)) {
       return {
         ok: false as const,
-        error: 'MANUS_API_KEY not configured.',
+        error: 'MANUS_API_KEY not configured. Add it in Settings or env.',
         jobId: null as string | null,
       }
     }
@@ -123,7 +127,7 @@ export const startCoverageReelJob = createServerFn({ method: 'POST' })
       title: 'coverage-reel',
       prompt,
       agentProfile: 'standard',
-    })
+    }, manusCtx)
 
     let jobId: string | null = null
     if (hasSupabaseConfig()) {
