@@ -9,6 +9,7 @@ import {
   extractManusResults,
 } from '~/lib/manus/client'
 import { searchNews } from '~/lib/medialyst/client'
+import type { ClientProfile } from '~/lib/profile'
 
 const SettingsPartial = z
   .object({
@@ -32,6 +33,32 @@ const SettingsPartial = z
   })
   .optional()
 
+export type ResearchedProfile = ClientProfile & {
+  website?: string
+}
+
+function parseProfileJson(text: string): Partial<ClientProfile> | null {
+  const match = text.match(/\{[\s\S]*\}/)
+  if (!match) return null
+  try {
+    const obj = JSON.parse(match[0]) as Record<string, unknown>
+    return {
+      name: typeof obj.name === 'string' ? obj.name : '',
+      standing: typeof obj.standing === 'string' ? obj.standing : '',
+      beats: typeof obj.beats === 'string' ? obj.beats : '',
+      competitors: typeof obj.competitors === 'string' ? obj.competitors : '',
+      notes: typeof obj.notes === 'string' ? obj.notes : '',
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Build a structured client profile from a website URL.
+ * Returns JSON fields that map 1:1 to the Profile page form.
+ * standing / beats / competitors / notes may contain markdown.
+ */
 export const researchFromWebsite = createServerFn({ method: 'POST' })
   .validator(
     z.object({
@@ -85,7 +112,7 @@ export const researchFromWebsite = createServerFn({ method: 'POST' })
         const task = await manusCreateTask(
           {
             title: `research profile: ${data.companyName || url}`,
-            prompt: `Visit ${url} and summarize the company for a PR agent: product, ICP, competitors, spokespeople, beat topics. Also note any recent news headlines you find. Keep under 600 words.`,
+            prompt: `Visit ${url} and extract company facts for a PR agent: product, ICP, competitors, spokespeople, beat topics, recent news. Keep under 600 words.`,
             agentProfile: 'lite',
           },
           { apiKey: settings.manusApiKey || undefined },
@@ -106,17 +133,20 @@ export const researchFromWebsite = createServerFn({ method: 'POST' })
       }
     }
 
-    const system = `You build PR client profiles for newsjack.
-From website text and optional news, produce a structured profile:
-- Company name
-- One-line product
-- Standing (why journalists might care)
-- Beat topics
-- Competitors
-- Likely spokespeople / roles
-- Suggested monitor topics (5–10 keywords)
-Do not invent funding amounts or customer counts not present in the sources.
-Label uncertain fields as "unknown / needs confirmation".`
+    const system = `You build PR client profiles for newsjack web.
+Return ONLY a JSON object with exactly these string keys:
+{
+  "name": "Company legal or product name",
+  "standing": "Markdown: why this company has authority to speak — expertise, data, customers, founders. Use short paragraphs or bullets.",
+  "beats": "Markdown: topic beats journalists care about (bullets ok)",
+  "competitors": "Markdown: named competitors and brief positioning",
+  "notes": "Markdown: spokespeople, proof assets, risks, open questions"
+}
+Rules:
+- Do not invent funding amounts, customer counts, or quotes not in the sources.
+- If unknown, write "Unknown — needs confirmation" for that part of the field.
+- standing/beats/competitors/notes may use markdown (lists, bold). name is plain text.
+- No preamble, no code fences — raw JSON only.`
 
     const user = `Company hint: ${data.companyName || '(none)'}
 Website: ${url}
@@ -127,17 +157,32 @@ ${siteText || '(empty)'}
 ## News / research
 ${newsBlock || '(none)'}
 
-Write the profile in markdown.`
+Return the JSON profile now.`
 
     try {
       const { text, provider } = await callLlm(settings, system, user)
-      return { ok: true as const, profile: text, provider, website: url }
+      const parsed = parseProfileJson(text)
+      if (!parsed) {
+        return {
+          ok: false as const,
+          error: 'Model did not return valid profile JSON',
+          raw: text,
+          provider,
+        }
+      }
+      const profile: ResearchedProfile = {
+        name: parsed.name || data.companyName || url,
+        standing: parsed.standing || '',
+        beats: parsed.beats || '',
+        competitors: parsed.competitors || '',
+        notes: parsed.notes || '',
+        website: url,
+      }
+      return { ok: true as const, profile, provider, website: url }
     } catch (e) {
       return {
-        ok: true as const,
-        profile: `## Draft profile (LLM unavailable)\n\nWebsite: ${url}\n\n### Extract\n${siteText.slice(0, 2000)}\n\n### Research\n${newsBlock}\n\n_Error: ${e instanceof Error ? e.message : String(e)}_`,
-        provider: 'offline',
-        website: url,
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
       }
     }
   })
@@ -148,22 +193,12 @@ export const enrichSkillInputs = createServerFn({ method: 'POST' })
       slug: z.string(),
       values: z.record(z.string()),
       profile: z.string().optional(),
-      website: z.string().optional(),
       settings: SettingsPartial,
     }),
   )
   .handler(async ({ data }) => {
     const settings = resolveSettings(data.settings)
-    let profile = data.profile || ''
-    if (data.website?.trim() && !profile.trim()) {
-      const r = await researchFromWebsite({
-        data: {
-          website: data.website,
-          settings: data.settings,
-        },
-      })
-      if (r.ok) profile = r.profile
-    }
+    const profile = data.profile || ''
 
     const system = `You help prefill newsjack skill forms.
 Given a client profile and partial inputs for skill "${data.slug}",

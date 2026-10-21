@@ -106,3 +106,22 @@ select {
 }
 .nj-md .nj-hr { border: 0; border-top: 1px solid var(--border); margin: 1rem 0; }
 .nj-md a { word-break: break-all; }
+
+/* Chat thinking shimmer */
+.shimmer-lines { display: flex; flex-direction: column; gap: 0.5rem; min-width: 12rem; }
+.shimmer-line {
+  height: 0.65rem;
+  border-radius: 0.35rem;
+  background: linear-gradient(
+    90deg,
+    var(--surface-2, #1a1a1e) 0%,
+    var(--border, #333) 40%,
+    var(--surface-2, #1a1a1e) 80%
+  );
+  background-size: 200% 100%;
+  animation: nj-shimmer 1.2s ease-in-out infinite;
+}
+@keyframes nj-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}

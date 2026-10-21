@@ -1,20 +1,27 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getSkill } from '~/lib/skills/catalog'
 import { runSkill } from '~/lib/skills/run'
 import {
   startCoverageReelJob,
   startPressClipJob,
 } from '~/lib/jobs/browser'
-import { saveProfile, loadProfile, profileToPromptBlock } from '~/lib/profile'
+import {
+  loadProfile,
+  profileToPromptBlock,
+} from '~/lib/profile'
 import { loadSettings } from '~/lib/settings/client'
-import { enrichSkillInputs, researchFromWebsite } from '~/lib/auto/research'
+import { enrichSkillInputs } from '~/lib/auto/research'
 import { Markdown } from '~/components/Markdown'
-
 
 export const Route = createFileRoute('/tools/$slug')({
   component: ToolPage,
 })
+
+function profileReady(): boolean {
+  const p = loadProfile()
+  return Boolean(p.name?.trim() && (p.standing?.trim() || p.beats?.trim()))
+}
 
 function ToolPage() {
   const { slug } = Route.useParams()
@@ -32,8 +39,12 @@ function ToolPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [provider, setProvider] = useState('')
-  const [website, setWebsite] = useState('')
   const [status, setStatus] = useState('')
+  const [hasProfile, setHasProfile] = useState(true)
+
+  useEffect(() => {
+    setHasProfile(profileReady())
+  }, [])
 
   if (!skill) {
     return (
@@ -57,8 +68,12 @@ function ToolPage() {
   }
 
   async function onAutoFill() {
+    if (!profileReady()) {
+      setError('Save a client profile first (name + standing or beats).')
+      return
+    }
     setBusy(true)
-    setStatus('Inferring missing fields…')
+    setStatus('Inferring missing fields from profile…')
     setError('')
     try {
       const settings = loadSettings()
@@ -68,69 +83,16 @@ function ToolPage() {
           slug: skill.slug,
           values,
           profile: profile || undefined,
-          website: website || undefined,
           settings,
         },
       })
       if (res.ok) {
         setValues(res.values)
-        if (res.profile && !profile) {
-          // stash researched profile into local profile notes
-          const p = loadProfile()
-          saveProfile({
-            ...p,
-            name: p.name || website || p.name,
-            standing: res.profile,
-          })
-        }
         setStatus(
           res.filled.length
             ? `Filled: ${res.filled.join(', ')}`
-            : 'Nothing to fill (or LLM unavailable).',
+            : 'Nothing empty to fill (or LLM unavailable).',
         )
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function onResearchSite() {
-    if (!website.trim()) {
-      setStatus('Enter a website first.')
-      return
-    }
-    setBusy(true)
-    setStatus('Researching website…')
-    setError('')
-    try {
-      const res = await researchFromWebsite({
-        data: {
-          website: website.trim(),
-          settings: loadSettings(),
-        },
-      })
-      if (res.ok) {
-        const p = loadProfile()
-        saveProfile({
-          ...p,
-          name: p.name || res.website,
-          standing: res.profile,
-        })
-        // Prefer first company-like textarea
-        for (const input of skill.inputs) {
-          if (
-            /company|profile|context|brief|update/i.test(input.id) ||
-            /company|profile|context/i.test(input.label)
-          ) {
-            setField(input.id, res.profile)
-            break
-          }
-        }
-        setOutput(res.profile)
-        setProvider(res.provider)
-        setStatus(`Profile built via ${res.provider}. Saved to Profile.`)
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -141,6 +103,11 @@ function ToolPage() {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (!profileReady()) {
+      setError('A client profile is required. Configure it on the Profile page first.')
+      setHasProfile(false)
+      return
+    }
     setBusy(true)
     setError('')
     setOutput('')
@@ -160,9 +127,8 @@ function ToolPage() {
               manusApiKey: settings.manusApiKey || undefined,
             },
           })
-          if (!res.ok) {
-            setError(res.error || 'Job failed')
-          } else {
+          if (!res.ok) setError(res.error || 'Job failed')
+          else {
             setOutput(
               [
                 '## Manus press-clip job queued',
@@ -186,9 +152,8 @@ function ToolPage() {
               manusApiKey: settings.manusApiKey || undefined,
             },
           })
-          if (!res.ok) {
-            setError(res.error || 'Job failed')
-          } else {
+          if (!res.ok) setError(res.error || 'Job failed')
+          else {
             setOutput(
               [
                 '## Manus coverage-reel job queued',
@@ -223,6 +188,30 @@ function ToolPage() {
     }
   }
 
+  if (!hasProfile && !profileReady()) {
+    return (
+      <div className="max-w-lg space-y-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+        <h1 className="text-xl font-semibold">Profile required</h1>
+        <p className="text-sm text-[var(--muted)]">
+          Skills need a client profile (company name + standing or beats) so the
+          agent has context — same as local newsjack.
+        </p>
+        <Link
+          to="/profile"
+          className="inline-flex rounded-lg px-4 py-2.5 text-sm font-semibold"
+          style={{ background: 'var(--accent)', color: '#0a0a0b' }}
+        >
+          Set up profile
+        </Link>
+        <div>
+          <Link to="/tools" className="text-sm text-[var(--muted)] underline">
+            ← Back to skills
+          </Link>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="max-w-3xl space-y-6">
       <div>
@@ -237,52 +226,34 @@ function ToolPage() {
         </h1>
         <p className="mt-2 text-[var(--muted)] text-sm">{skill.description}</p>
         <p className="mt-1 text-xs text-[var(--muted)]">
-          When to use: {skill.whenToUse}
+          Using profile: <strong>{loadProfile().name || '—'}</strong>
+          {' · '}
+          <Link to="/profile" className="underline text-[var(--accent-dim)]">
+            edit
+          </Link>
         </p>
       </div>
 
-      {/* Auto research bar */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 space-y-2">
-        <div className="text-xs font-medium text-[var(--muted)]">
-          Auto (like newsjack agent) — website → profile when fields are empty
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <input
-            className="flex-1 min-w-[12rem] rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-            placeholder="https://yourcompany.com"
-            value={website}
-            onChange={(e) => setWebsite(e.target.value)}
-          />
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onAutoFill}
+          className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-40"
+        >
+          Fill empty fields from profile
+        </button>
+        {skill.examples && (
           <button
             type="button"
-            disabled={busy}
-            onClick={onResearchSite}
-            className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-40"
+            onClick={loadExample}
+            className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--accent-dim)]"
           >
-            Build profile from site
+            Try example
           </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onAutoFill}
-            className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-40"
-          >
-            Fill empty fields
-          </button>
-          {skill.examples && (
-            <button
-              type="button"
-              onClick={loadExample}
-              className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm text-[var(--accent-dim)]"
-            >
-              Try example
-            </button>
-          )}
-        </div>
-        {status && (
-          <p className="text-xs text-[var(--muted)]">{status}</p>
         )}
       </div>
+      {status && <p className="text-xs text-[var(--muted)]">{status}</p>}
 
       <form onSubmit={onSubmit} className="space-y-4">
         {skill.inputs.map((input) => (
@@ -320,7 +291,11 @@ function ToolPage() {
           className="rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
           style={{ background: 'var(--accent)', color: '#0a0a0b' }}
         >
-          {busy ? 'Running…' : skill.browserWorker ? 'Start Manus job' : 'Run skill'}
+          {busy
+            ? 'Running…'
+            : skill.browserWorker
+              ? 'Start Manus job'
+              : 'Run skill'}
         </button>
       </form>
 
@@ -332,10 +307,8 @@ function ToolPage() {
 
       {output && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs uppercase tracking-wide text-[var(--muted)]">
-              Result {provider ? `· ${provider}` : ''}
-            </span>
+          <div className="text-xs uppercase tracking-wide text-[var(--muted)] mb-3">
+            Result {provider ? `· ${provider}` : ''}
           </div>
           <Markdown content={output} />
         </div>

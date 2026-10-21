@@ -1,0 +1,367 @@
+import { createFileRoute, Link } from '@tanstack/react-router'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { SKILLS, getSkill } from '~/lib/skills/catalog'
+import {
+  loadProfile,
+  profileToPromptBlock,
+} from '~/lib/profile'
+import { loadSettings } from '~/lib/settings/client'
+import { runChat } from '~/lib/chat/run'
+import {
+  deleteThread,
+  loadThreads,
+  newId,
+  upsertThread,
+  type ChatMessage,
+  type ChatThread,
+} from '~/lib/chat/history'
+import { Markdown } from '~/components/Markdown'
+
+export const Route = createFileRoute('/chat')({
+  component: ChatPage,
+})
+
+function profileReady(): boolean {
+  const p = loadProfile()
+  return Boolean(p.name?.trim() && (p.standing?.trim() || p.beats?.trim()))
+}
+
+function ChatPage() {
+  const [ready, setReady] = useState(true)
+  const [threads, setThreads] = useState<ChatThread[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [skillSlug, setSkillSlug] = useState<string | undefined>()
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setReady(profileReady())
+    const t = loadThreads()
+    setThreads(t)
+    if (t[0]) setActiveId(t[0].id)
+  }, [])
+
+  const active = useMemo(
+    () => threads.find((t) => t.id === activeId) || null,
+    [threads, activeId],
+  )
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [active?.messages, busy])
+
+  function persist(next: ChatThread) {
+    upsertThread(next)
+    setThreads(loadThreads())
+    setActiveId(next.id)
+  }
+
+  function startNew() {
+    const t: ChatThread = {
+      id: newId(),
+      title: 'New chat',
+      skillSlug,
+      messages: [],
+      updatedAt: new Date().toISOString(),
+    }
+    persist(t)
+  }
+
+  async function onSend(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!profileReady()) {
+      setReady(false)
+      return
+    }
+    const text = input.trim()
+    if (!text || busy) return
+
+    let thread = active
+    if (!thread) {
+      thread = {
+        id: newId(),
+        title: text.slice(0, 48),
+        skillSlug,
+        messages: [],
+        updatedAt: new Date().toISOString(),
+      }
+    }
+
+    const userMsg: ChatMessage = {
+      id: newId(),
+      role: 'user',
+      content: text,
+      skillSlug,
+      createdAt: new Date().toISOString(),
+    }
+
+    const withUser: ChatThread = {
+      ...thread,
+      title:
+        thread.messages.length === 0 ? text.slice(0, 48) : thread.title,
+      skillSlug: skillSlug || thread.skillSlug,
+      messages: [...thread.messages, userMsg],
+      updatedAt: new Date().toISOString(),
+    }
+    persist(withUser)
+    setInput('')
+    setBusy(true)
+
+    try {
+      const res = await runChat({
+        data: {
+          messages: withUser.messages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          skillSlug: skillSlug || withUser.skillSlug,
+          profile: profileToPromptBlock(loadProfile()),
+          settings: loadSettings(),
+        },
+      })
+
+      const assistant: ChatMessage = {
+        id: newId(),
+        role: 'assistant',
+        content: res.ok
+          ? res.content
+          : `**Error:** ${res.error || 'Chat failed'}`,
+        skillSlug: skillSlug || withUser.skillSlug,
+        createdAt: new Date().toISOString(),
+      }
+      persist({
+        ...withUser,
+        messages: [...withUser.messages, assistant],
+        updatedAt: new Date().toISOString(),
+      })
+    } catch (err) {
+      const assistant: ChatMessage = {
+        id: newId(),
+        role: 'assistant',
+        content: `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+        createdAt: new Date().toISOString(),
+      }
+      persist({
+        ...withUser,
+        messages: [...withUser.messages, assistant],
+        updatedAt: new Date().toISOString(),
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!ready) {
+    return (
+      <div className="max-w-lg mx-auto mt-12 space-y-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-6">
+        <h1 className="text-xl font-semibold">Profile required</h1>
+        <p className="text-sm text-[var(--muted)]">
+          Chat needs a client profile so the agent has company context.
+        </p>
+        <Link
+          to="/profile"
+          className="inline-flex rounded-lg px-4 py-2.5 text-sm font-semibold"
+          style={{ background: 'var(--accent)', color: '#0a0a0b' }}
+        >
+          Set up profile
+        </Link>
+      </div>
+    )
+  }
+
+  const attached = skillSlug ? getSkill(skillSlug) : null
+
+  return (
+    <div className="flex h-[calc(100vh-3.5rem-3rem)] max-w-6xl mx-auto gap-4 -mt-2">
+      {/* Sidebar history */}
+      <aside className="hidden md:flex w-56 shrink-0 flex-col border border-[var(--border)] rounded-xl bg-[var(--surface)] overflow-hidden">
+        <div className="p-3 border-b border-[var(--border)] flex items-center justify-between">
+          <span className="text-xs font-medium text-[var(--muted)]">History</span>
+          <button
+            type="button"
+            onClick={startNew}
+            className="text-xs text-[var(--accent-dim)]"
+          >
+            + New
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          {threads.map((t) => (
+            <div
+              key={t.id}
+              className={`group flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm cursor-pointer ${
+                t.id === activeId
+                  ? 'bg-[var(--surface-2)]'
+                  : 'hover:bg-[var(--surface-2)]/60'
+              }`}
+              onClick={() => {
+                setActiveId(t.id)
+                setSkillSlug(t.skillSlug)
+              }}
+            >
+              <span className="flex-1 truncate">{t.title || 'Untitled'}</span>
+              <button
+                type="button"
+                className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)]"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  deleteThread(t.id)
+                  const next = loadThreads()
+                  setThreads(next)
+                  if (activeId === t.id) setActiveId(next[0]?.id || null)
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {threads.length === 0 && (
+            <p className="text-xs text-[var(--muted)] p-2">No chats yet</p>
+          )}
+        </div>
+      </aside>
+
+      {/* Main chat */}
+      <div className="flex-1 flex flex-col min-w-0 border border-[var(--border)] rounded-xl bg-[var(--surface)] overflow-hidden">
+        <div className="px-4 py-3 border-b border-[var(--border)] flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-medium">Chat</span>
+          <span className="text-xs text-[var(--muted)]">
+            {loadProfile().name}
+          </span>
+          <div className="flex-1" />
+          <button
+            type="button"
+            className="md:hidden text-xs text-[var(--accent-dim)]"
+            onClick={startNew}
+          >
+            New chat
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          {(!active || active.messages.length === 0) && !busy && (
+            <div className="text-center text-sm text-[var(--muted)] mt-16 space-y-2">
+              <p>Ask anything PR-related, or attach a skill below.</p>
+              <p className="text-xs">
+                Profile and conversation history stay in context.
+              </p>
+            </div>
+          )}
+
+          {active?.messages.map((m) => (
+            <div
+              key={m.id}
+              className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
+                  m.role === 'user'
+                    ? 'bg-[var(--accent)] text-[#0a0a0b]'
+                    : 'bg-[var(--surface-2)] border border-[var(--border)]'
+                }`}
+              >
+                {m.skillSlug && m.role === 'user' && (
+                  <div className="text-[10px] opacity-70 mb-1">
+                    /{m.skillSlug}
+                  </div>
+                )}
+                {m.role === 'assistant' ? (
+                  <Markdown content={m.content} />
+                ) : (
+                  <div className="whitespace-pre-wrap">{m.content}</div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {busy && (
+            <div className="flex justify-start">
+              <div className="rounded-2xl px-4 py-3 bg-[var(--surface-2)] border border-[var(--border)]">
+                <div className="shimmer-lines">
+                  <div className="shimmer-line w-48" />
+                  <div className="shimmer-line w-64" />
+                  <div className="shimmer-line w-40" />
+                </div>
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Composer */}
+        <div className="border-t border-[var(--border)] p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {attached ? (
+              <button
+                type="button"
+                onClick={() => setSkillSlug(undefined)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[var(--accent-dim)] bg-[var(--accent)]/10 px-3 py-1 text-xs"
+              >
+                <span>{attached.icon}</span>
+                <span>/{attached.slug}</span>
+                <span className="opacity-60">×</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setSkillPickerOpen((o) => !o)}
+                className="inline-flex items-center rounded-full border border-[var(--border)] px-3 py-1 text-xs text-[var(--muted)] hover:text-[var(--text)]"
+              >
+                + Attach skill
+              </button>
+            )}
+          </div>
+
+          {skillPickerOpen && !attached && (
+            <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+              {SKILLS.map((s) => (
+                <button
+                  key={s.slug}
+                  type="button"
+                  onClick={() => {
+                    setSkillSlug(s.slug)
+                    setSkillPickerOpen(false)
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] px-2.5 py-1 text-xs hover:bg-[var(--surface-2)]"
+                >
+                  <span>{s.icon}</span>
+                  {s.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <form onSubmit={onSend} className="flex gap-2">
+            <textarea
+              className="flex-1 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2.5 text-sm min-h-[2.75rem] max-h-32 resize-y"
+              placeholder={
+                attached
+                  ? `Message with /${attached.slug}…`
+                  : 'Message Newsjack…'
+              }
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  onSend()
+                }
+              }}
+              rows={1}
+            />
+            <button
+              type="submit"
+              disabled={busy || !input.trim()}
+              className="self-end rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
+              style={{ background: 'var(--accent)', color: '#0a0a0b' }}
+            >
+              Send
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  )
+}

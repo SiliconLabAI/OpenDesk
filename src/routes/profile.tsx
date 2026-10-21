@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import {
   emptyProfile,
@@ -14,13 +14,19 @@ export const Route = createFileRoute('/profile')({
   component: ProfilePage,
 })
 
+function hasMinimumProfile(p: ClientProfile): boolean {
+  return Boolean(p.name?.trim() && (p.standing?.trim() || p.beats?.trim()))
+}
+
 function ProfilePage() {
   const [profile, setProfile] = useState<ClientProfile>(emptyProfile)
   const [website, setWebsite] = useState('')
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const [preview, setPreview] = useState('')
+  const [previewField, setPreviewField] = useState<
+    'standing' | 'beats' | 'competitors' | 'notes' | null
+  >('standing')
 
   useEffect(() => {
     setProfile(loadProfile())
@@ -30,6 +36,11 @@ function ProfilePage() {
     e.preventDefault()
     saveProfile(profile)
     setSaved(true)
+    setMsg(
+      hasMinimumProfile(profile)
+        ? 'Profile saved. Skills and Chat can use it.'
+        : 'Saved — add name + standing or beats so skills unlock.',
+    )
     setTimeout(() => setSaved(false), 2000)
   }
 
@@ -39,7 +50,7 @@ function ProfilePage() {
       return
     }
     setBusy(true)
-    setMsg('Researching…')
+    setMsg('Researching website…')
     try {
       const res = await researchFromWebsite({
         data: {
@@ -48,14 +59,22 @@ function ProfilePage() {
           settings: loadSettings(),
         },
       })
-      if (res.ok) {
-        setPreview(res.profile)
-        setProfile((p) => ({
-          ...p,
-          name: p.name || res.website,
-          standing: res.profile,
-        }))
-        setMsg(`Built via ${res.provider}. Review standing field, then Save.`)
+      if (res.ok && res.profile) {
+        setProfile({
+          name: res.profile.name || profile.name,
+          standing: res.profile.standing || '',
+          beats: res.profile.beats || '',
+          competitors: res.profile.competitors || '',
+          notes: res.profile.notes || '',
+        })
+        setMsg(
+          `Filled all fields via ${res.provider}. Review markdown fields, then Save.`,
+        )
+      } else {
+        setMsg(
+          ('error' in res && res.error) ||
+            'Research failed — check Settings LLM keys.',
+        )
       }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e))
@@ -65,12 +84,13 @@ function ProfilePage() {
   }
 
   return (
-    <div className="max-w-xl space-y-6">
+    <div className="max-w-2xl space-y-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Client profile</h1>
         <p className="mt-2 text-[var(--muted)] text-sm leading-relaxed">
-          Like the local newsjack agent: paste a website and we infer standing,
-          beats, and topics. Stored in this browser; attached to skill runs.
+          Required before running skills or chat. Research fills{' '}
+          <strong>each field</strong> from a website (JSON-mapped). Standing,
+          beats, competitors, and notes support markdown.
         </p>
       </div>
 
@@ -91,43 +111,67 @@ function ProfilePage() {
             onClick={onResearch}
             className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-40"
           >
-            {busy ? '…' : 'Research'}
+            {busy ? 'Researching…' : 'Research'}
           </button>
         </div>
         {msg && <p className="text-xs text-[var(--muted)]">{msg}</p>}
       </div>
 
       <form onSubmit={onSave} className="space-y-4">
+        <label className="block space-y-1.5">
+          <span className="text-sm font-medium">Company name</span>
+          <input
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            value={profile.name}
+            onChange={(e) =>
+              setProfile((p) => ({ ...p, name: e.target.value }))
+            }
+            required
+          />
+        </label>
+
         {(
           [
-            ['name', 'Company name', false],
-            ['standing', 'Standing / authority', true],
-            ['beats', 'Beats / topics', true],
-            ['competitors', 'Competitors', true],
-            ['notes', 'Notes', true],
+            ['standing', 'Standing / authority'],
+            ['beats', 'Beats / topics'],
+            ['competitors', 'Competitors'],
+            ['notes', 'Notes'],
           ] as const
-        ).map(([key, label, multi]) => (
-          <label key={key} className="block space-y-1.5">
-            <span className="text-sm font-medium">{label}</span>
-            {multi ? (
-              <textarea
-                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm min-h-[5rem]"
-                value={profile[key]}
-                onChange={(e) =>
-                  setProfile((p) => ({ ...p, [key]: e.target.value }))
+        ).map(([key, label]) => (
+          <div key={key} className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">{label}</span>
+              <button
+                type="button"
+                className="text-xs text-[var(--accent-dim)]"
+                onClick={() =>
+                  setPreviewField((cur) => (cur === key ? null : key))
                 }
-              />
+              >
+                {previewField === key ? 'Edit' : 'Preview markdown'}
+              </button>
+            </div>
+            {previewField === key ? (
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 min-h-[5rem]">
+                {profile[key]?.trim() ? (
+                  <Markdown content={profile[key]} />
+                ) : (
+                  <span className="text-sm text-[var(--muted)]">Empty</span>
+                )}
+              </div>
             ) : (
-              <input
-                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+              <textarea
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm min-h-[5rem] font-mono"
                 value={profile[key]}
                 onChange={(e) =>
                   setProfile((p) => ({ ...p, [key]: e.target.value }))
                 }
+                placeholder="Markdown supported…"
               />
             )}
-          </label>
+          </div>
         ))}
+
         <button
           type="submit"
           className="rounded-lg px-4 py-2.5 text-sm font-semibold"
@@ -137,12 +181,16 @@ function ProfilePage() {
         </button>
       </form>
 
-      {preview && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4">
-          <div className="text-xs text-[var(--muted)] mb-2">Research preview</div>
-          <Markdown content={preview} />
-        </div>
-      )}
+      <p className="text-xs text-[var(--muted)]">
+        Next:{' '}
+        <Link to="/tools" className="underline text-[var(--accent-dim)]">
+          Skills
+        </Link>{' '}
+        or{' '}
+        <Link to="/chat" className="underline text-[var(--accent-dim)]">
+          Chat
+        </Link>
+      </p>
     </div>
   )
 }

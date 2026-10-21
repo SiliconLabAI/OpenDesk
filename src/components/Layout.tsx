@@ -19,6 +19,16 @@ export function Layout({ children }: { children: ReactNode }) {
           </Link>
           <nav className="flex items-center gap-1 text-sm">
             <Link
+              to="/chat"
+              className="px-3 py-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]"
+              activeProps={{
+                className:
+                  'px-3 py-1.5 rounded-md bg-[var(--surface-2)] text-[var(--text)]',
+              }}
+            >
+              Chat
+            </Link>
+            <Link
               to="/tools"
               className="px-3 py-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]"
               activeProps={{

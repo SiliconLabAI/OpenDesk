@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ChatRouteImport } from './routes/chat'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as MonitorsIndexRouteImport } from './routes/monitors/index'
@@ -21,6 +22,11 @@ import { Route as ToolsSlugRouteImport } from './routes/tools/$slug'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChatRoute = ChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProfileRoute = ProfileRouteImport.update({
@@ -61,6 +67,7 @@ const ToolsSlugRoute = ToolsSlugRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/runs/$id': typeof RunsIdRoute
@@ -71,6 +78,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/runs/$id': typeof RunsIdRoute
@@ -82,6 +90,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/chat': typeof ChatRoute
   '/profile': typeof ProfileRoute
   '/settings': typeof SettingsRoute
   '/runs/$id': typeof RunsIdRoute
@@ -94,6 +103,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/chat'
     | '/profile'
     | '/settings'
     | '/runs/$id'
@@ -104,6 +114,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/chat'
     | '/profile'
     | '/settings'
     | '/runs/$id'
@@ -114,6 +125,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/chat'
     | '/profile'
     | '/settings'
     | '/runs/$id'
@@ -125,6 +137,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ChatRoute: typeof ChatRoute
   ProfileRoute: typeof ProfileRoute
   SettingsRoute: typeof SettingsRoute
   RunsIdRoute: typeof RunsIdRoute
@@ -141,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/chat': {
+      id: '/chat'
+      path: '/chat'
+      fullPath: '/chat'
+      preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/profile': {
@@ -197,6 +217,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ChatRoute: ChatRoute,
   ProfileRoute: ProfileRoute,
   SettingsRoute: SettingsRoute,
   RunsIdRoute: RunsIdRoute,
