@@ -1,3 +1,9 @@
+import {
+  deleteChatThread,
+  listChatThreads,
+  upsertChatThread,
+} from './store'
+
 export type ChatMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -16,7 +22,16 @@ export type ChatThread = {
 
 const KEY = 'newsjack.chat.threads.v1'
 
-export function loadThreads(): ChatThread[] {
+function cacheLocal(threads: ChatThread[]) {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(KEY, JSON.stringify(threads.slice(0, 50)))
+  } catch {
+    /* quota */
+  }
+}
+
+export function loadThreadsSync(): ChatThread[] {
   if (typeof window === 'undefined') return []
   try {
     const raw = localStorage.getItem(KEY)
@@ -27,20 +42,58 @@ export function loadThreads(): ChatThread[] {
   }
 }
 
-export function saveThreads(threads: ChatThread[]) {
-  localStorage.setItem(KEY, JSON.stringify(threads.slice(0, 50)))
+export async function loadThreads(): Promise<ChatThread[]> {
+  try {
+    const res = await listChatThreads()
+    if (res.ok) {
+      cacheLocal(res.threads)
+      return res.threads
+    }
+  } catch {
+    /* fall through */
+  }
+  return loadThreadsSync()
 }
 
-export function upsertThread(thread: ChatThread) {
-  const all = loadThreads().filter((t) => t.id !== thread.id)
+export async function upsertThread(thread: ChatThread): Promise<void> {
+  const all = loadThreadsSync().filter((t) => t.id !== thread.id)
   all.unshift(thread)
-  saveThreads(all)
+  cacheLocal(all)
+  try {
+    await upsertChatThread({
+      data: {
+        id: thread.id,
+        title: thread.title,
+        skillSlug: thread.skillSlug,
+        messages: thread.messages,
+      },
+    })
+  } catch {
+    /* kept in local cache */
+  }
 }
 
-export function deleteThread(id: string) {
-  saveThreads(loadThreads().filter((t) => t.id !== id))
+export async function deleteThread(id: string): Promise<void> {
+  cacheLocal(loadThreadsSync().filter((t) => t.id !== id))
+  try {
+    await deleteChatThread({ data: { id } })
+  } catch {
+    /* ignore */
+  }
 }
 
 export function newId() {
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+// UUID for Supabase primary keys when inserting new threads
+export function newUuid() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID()
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === 'x' ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
 }

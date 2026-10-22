@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import {
   emptyProfile,
   loadProfile,
+  loadProfileRemote,
   saveProfile,
   type ClientProfile,
 } from '~/lib/profile'
@@ -24,26 +25,53 @@ function ProfilePage() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  /** which field is in text-edit mode (others show rendered markdown) */
   const [editing, setEditing] = useState<
     'standing' | 'beats' | 'competitors' | 'notes' | null
   >(null)
 
   useEffect(() => {
-    setProfile(loadProfile())
+    ;(async () => {
+      const res = await loadProfileRemote()
+      if (res.ok && (res.profile.name || res.profile.standing)) {
+        setProfile(res.profile)
+        // keep cache in sync
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(
+            'newsjack-web-profile',
+            JSON.stringify(res.profile),
+          )
+        }
+      } else {
+        setProfile(loadProfile())
+      }
+      if (!res.ok && res.error) {
+        setMsg(`Supabase: ${res.error} — using local cache if any`)
+      }
+    })()
   }, [])
 
-  function onSave(e: React.FormEvent) {
+  async function onSave(e: React.FormEvent) {
     e.preventDefault()
-    saveProfile(profile)
+    setBusy(true)
     setEditing(null)
-    setSaved(true)
-    setMsg(
-      hasMinimumProfile(profile)
-        ? 'Profile saved. Skills and Chat can use it.'
-        : 'Saved — add name + standing or beats so skills unlock.',
-    )
-    setTimeout(() => setSaved(false), 2000)
+    try {
+      const res = await saveProfile(profile, website || undefined)
+      setSaved(true)
+      if (res.ok) {
+        setMsg(
+          hasMinimumProfile(profile)
+            ? 'Saved to Supabase. Skills and Chat can use it.'
+            : 'Saved to Supabase — add name + standing or beats so skills unlock.',
+        )
+      } else {
+        setMsg(
+          `Local cache updated. Supabase error: ${res.error || 'unknown'}`,
+        )
+      }
+      setTimeout(() => setSaved(false), 2000)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function onResearch() {
@@ -63,15 +91,16 @@ function ProfilePage() {
         },
       })
       if (res.ok && res.profile) {
-        setProfile({
+        const next = {
           name: res.profile.name || profile.name,
           standing: res.profile.standing || '',
           beats: res.profile.beats || '',
           competitors: res.profile.competitors || '',
           notes: res.profile.notes || '',
-        })
+        }
+        setProfile(next)
         setMsg(
-          `Filled all fields via ${res.provider}. Review rendered markdown, then Save.`,
+          `Filled via ${res.provider}. Review markdown, then Save to Supabase.`,
         )
       } else {
         setMsg(
@@ -91,9 +120,8 @@ function ProfilePage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Client profile</h1>
         <p className="mt-2 text-[var(--muted)] text-sm leading-relaxed">
-          Required before running skills or chat. Research fills each field from a
-          website. Standing, beats, competitors, and notes are shown as{' '}
-          <strong>markdown</strong> (click a field to edit the source).
+          Stored in <strong>Supabase</strong>. Required before skills or chat.
+          Markdown fields render below; click to edit source.
         </p>
       </div>
 
@@ -184,10 +212,11 @@ function ProfilePage() {
 
         <button
           type="submit"
-          className="rounded-lg px-4 py-2.5 text-sm font-semibold"
+          disabled={busy}
+          className="rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
           style={{ background: 'var(--accent)', color: '#0a0a0b' }}
         >
-          {saved ? 'Saved' : 'Save profile'}
+          {saved ? 'Saved' : 'Save to Supabase'}
         </button>
       </form>
 

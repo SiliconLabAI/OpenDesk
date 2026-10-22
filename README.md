@@ -48,3 +48,18 @@ curl -X POST https://api.manus.ai/v2/webhook.create \
 ```
 
 Upstream skills: [elvisun/newsjack](https://github.com/elvisun/newsjack).
+
+
+## Supabase migrations
+
+```bash
+# apply in order
+psql $DATABASE_URL -f supabase/migrations/001_full_mode.sql
+psql $DATABASE_URL -f supabase/migrations/002_auth_rls.sql
+psql $DATABASE_URL -f supabase/migrations/003_skill_drafts.sql
+psql $DATABASE_URL -f supabase/migrations/004_app_state.sql
+```
+
+Required env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (and optional `DEFAULT_ORG_ID`).
+
+Durable state tables: `client_profiles`, `app_settings`, `chat_threads`, `chat_messages`, `skill_drafts`, `monitors`, `jobs`.

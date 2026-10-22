@@ -11,6 +11,7 @@ import {
   deleteThread,
   loadThreads,
   newId,
+  newUuid,
   upsertThread,
   type ChatMessage,
   type ChatThread,
@@ -38,9 +39,11 @@ function ChatPage() {
 
   useEffect(() => {
     setReady(profileReady())
-    const t = loadThreads()
-    setThreads(t)
-    if (t[0]) setActiveId(t[0].id)
+    ;(async () => {
+      const list = await loadThreads()
+      setThreads(list)
+      if (list[0]) setActiveId(list[0].id)
+    })()
   }, [])
 
   const active = useMemo(
@@ -52,21 +55,22 @@ function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [active?.messages, busy])
 
-  function persist(next: ChatThread) {
-    upsertThread(next)
-    setThreads(loadThreads())
+  async function persist(next: ChatThread) {
+    await upsertThread(next)
+    const list = await loadThreads()
+    setThreads(list)
     setActiveId(next.id)
   }
 
   function startNew() {
     const t: ChatThread = {
-      id: newId(),
+      id: newUuid(),
       title: 'New chat',
       skillSlug,
       messages: [],
       updatedAt: new Date().toISOString(),
     }
-    persist(t)
+    void persist(t)
   }
 
   async function onSend(e?: React.FormEvent) {
@@ -81,7 +85,7 @@ function ChatPage() {
     let thread = active
     if (!thread) {
       thread = {
-        id: newId(),
+        id: newUuid(),
         title: text.slice(0, 48),
         skillSlug,
         messages: [],
@@ -90,7 +94,7 @@ function ChatPage() {
     }
 
     const userMsg: ChatMessage = {
-      id: newId(),
+      id: newUuid(),
       role: 'user',
       content: text,
       skillSlug,
@@ -105,7 +109,7 @@ function ChatPage() {
       messages: [...thread.messages, userMsg],
       updatedAt: new Date().toISOString(),
     }
-    persist(withUser)
+    await persist(withUser)
     setInput('')
     setBusy(true)
 
@@ -123,7 +127,7 @@ function ChatPage() {
       })
 
       const assistant: ChatMessage = {
-        id: newId(),
+        id: newUuid(),
         role: 'assistant',
         content: res.ok
           ? res.content
@@ -131,19 +135,19 @@ function ChatPage() {
         skillSlug: skillSlug || withUser.skillSlug,
         createdAt: new Date().toISOString(),
       }
-      persist({
+      await persist({
         ...withUser,
         messages: [...withUser.messages, assistant],
         updatedAt: new Date().toISOString(),
       })
     } catch (err) {
       const assistant: ChatMessage = {
-        id: newId(),
+        id: newUuid(),
         role: 'assistant',
         content: `**Error:** ${err instanceof Error ? err.message : String(err)}`,
         createdAt: new Date().toISOString(),
       }
-      persist({
+      await persist({
         ...withUser,
         messages: [...withUser.messages, assistant],
         updatedAt: new Date().toISOString(),
@@ -205,10 +209,10 @@ function ChatPage() {
               <button
                 type="button"
                 className="opacity-0 group-hover:opacity-100 text-xs text-[var(--muted)]"
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation()
-                  deleteThread(t.id)
-                  const next = loadThreads()
+                  await deleteThread(t.id)
+                  const next = await loadThreads()
                   setThreads(next)
                   if (activeId === t.id) setActiveId(next[0]?.id || null)
                 }}

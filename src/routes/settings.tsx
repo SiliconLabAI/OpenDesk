@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import {
   clearSettings,
   loadSettings,
+  loadSettingsAsync,
   saveSettings,
 } from '~/lib/settings/client'
 import type { ProviderSettings } from '~/lib/settings/types'
@@ -46,22 +47,30 @@ function SettingsPage() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    setS(loadSettings())
+    ;(async () => {
+      setS(await loadSettingsAsync())
+    })()
   }, [])
 
   function patch(p: Partial<ProviderSettings>) {
     setS((prev) => ({ ...prev, ...p }))
   }
 
-  function onSave() {
-    saveSettings(s)
-    setMsg('Saved to this browser (localStorage). Skill runs will send keys to the server over your connection.')
+  async function onSave() {
+    setBusy(true)
+    const res = await saveSettings(s)
+    setBusy(false)
+    setMsg(
+      res.ok
+        ? 'Saved to Supabase (and local cache). Skill runs use these keys.'
+        : `Local cache updated. Supabase: ${res.error || 'failed'}`,
+    )
   }
 
-  function onClear() {
-    clearSettings()
+  async function onClear() {
+    await clearSettings()
     setS({ ...DEFAULT_SETTINGS })
-    setMsg('Cleared browser settings.')
+    setMsg('Cleared settings (Supabase + cache).')
   }
 
   async function onTestLlm() {
@@ -101,7 +110,7 @@ function SettingsPage() {
       })
       if (res.ok) {
         patch({ appUrl })
-        saveSettings({ ...s, appUrl })
+        await saveSettings({ ...s, appUrl })
         setMsg(`Manus webhook registered → ${res.callback}`)
       } else {
         setMsg(`Webhook failed: ${res.error}`)
@@ -119,7 +128,7 @@ function SettingsPage() {
         <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
           API keys and OpenAI-compatible endpoints for Full Mode. Values are stored in
-          this browser and sent with skill runs. Server{' '}
+          <strong>Supabase</strong> (with a local cache). Server{' '}
           <code className="text-[var(--accent-dim)]">.env</code> still works as
           fallback.
         </p>
@@ -352,7 +361,7 @@ function SettingsPage() {
           className="rounded-lg px-4 py-2.5 text-sm font-semibold"
           style={{ background: 'var(--accent)', color: '#0a0a0b' }}
         >
-          Save settings
+          Save to Supabase
         </button>
         <button
           type="button"

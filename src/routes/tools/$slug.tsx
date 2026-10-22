@@ -8,6 +8,7 @@ import {
 } from '~/lib/jobs/browser'
 import {
   loadProfile,
+  loadProfileRemote,
   profileToPromptBlock,
 } from '~/lib/profile'
 import { loadSettings } from '~/lib/settings/client'
@@ -44,8 +45,14 @@ function ToolPage() {
   const [hasProfile, setHasProfile] = useState(true)
 
   useEffect(() => {
-    setHasProfile(profileReady())
     ;(async () => {
+      try {
+        const pr = await loadProfileRemote()
+        if (pr.ok && pr.profile) {
+          localStorage.setItem('newsjack-web-profile', JSON.stringify(pr.profile))
+        }
+      } catch { /* cache */ }
+      setHasProfile(profileReady())
       if (!skill) return
       try {
         const draft = await loadSkillDraft({ data: { skillSlug: skill.slug } })
@@ -134,7 +141,7 @@ function ToolPage() {
       setStatus(
         res.ok
           ? 'Draft saved to Supabase for this skill.'
-          : res.error || 'Save failed',
+          : `Save failed: ${res.error || 'unknown'} — check SUPABASE_* env and migration 003/004`,
       )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -222,6 +229,20 @@ function ToolPage() {
         if (!res.ok) setError(res.error || 'Run failed')
         setOutput(res.output || '')
         setProvider(res.provider || '')
+        // Persist form values to Supabase after every run
+        const draftRes = await saveSkillDraft({
+          data: {
+            skillSlug: skill.slug,
+            values,
+            title: skill.name,
+            profileName: loadProfile().name || undefined,
+          },
+        })
+        if (draftRes.ok) {
+          setStatus('Auto-saved draft to Supabase')
+        } else if (draftRes.error) {
+          setStatus(`Draft not saved: ${draftRes.error}`)
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

@@ -3,7 +3,9 @@ import {
   SETTINGS_STORAGE_KEY,
   type ProviderSettings,
 } from './types'
+import { loadSettingsRemote, saveSettingsRemote } from './store'
 
+/** Sync cache for server-fn calls in the same session */
 export function loadSettings(): ProviderSettings {
   if (typeof window === 'undefined') return { ...DEFAULT_SETTINGS }
   try {
@@ -15,17 +17,49 @@ export function loadSettings(): ProviderSettings {
   }
 }
 
-export function saveSettings(partial: Partial<ProviderSettings>): ProviderSettings {
+function cacheLocal(s: ProviderSettings) {
+  if (typeof window === 'undefined') return
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(s))
+}
+
+/** Load from Supabase (falls back to cache / defaults) */
+export async function loadSettingsAsync(): Promise<ProviderSettings> {
+  try {
+    const res = await loadSettingsRemote()
+    if (res.ok) {
+      cacheLocal(res.settings)
+      return res.settings
+    }
+  } catch {
+    /* use cache */
+  }
+  return loadSettings()
+}
+
+/** Save to Supabase + local cache */
+export async function saveSettings(
+  partial: Partial<ProviderSettings>,
+): Promise<{ ok: boolean; settings: ProviderSettings; error?: string }> {
   const next = { ...loadSettings(), ...partial }
-  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next))
-  return next
+  cacheLocal(next)
+  try {
+    const res = await saveSettingsRemote({ data: { settings: next } })
+    if (!res.ok) return { ok: false, settings: next, error: res.error }
+    return { ok: true, settings: next }
+  } catch (e) {
+    return {
+      ok: false,
+      settings: next,
+      error: e instanceof Error ? e.message : String(e),
+    }
+  }
 }
 
-export function clearSettings(): void {
-  localStorage.removeItem(SETTINGS_STORAGE_KEY)
+export async function clearSettings(): Promise<void> {
+  cacheLocal({ ...DEFAULT_SETTINGS })
+  await saveSettingsRemote({ data: { settings: { ...DEFAULT_SETTINGS } } })
 }
 
-/** Safe to show in UI — never log full keys */
 export function maskKey(key: string): string {
   if (!key) return ''
   if (key.length <= 8) return '••••'
