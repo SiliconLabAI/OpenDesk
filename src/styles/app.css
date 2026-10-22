@@ -125,3 +125,14 @@ select {
   0% { background-position: 100% 0; }
   100% { background-position: -100% 0; }
 }
+
+/* User bubble markdown (on accent background) */
+.nj-md-on-accent .nj-p,
+.nj-md-on-accent li,
+.nj-md-on-accent strong { color: inherit; }
+.nj-md-on-accent a { color: inherit; text-decoration: underline; }
+.nj-md-on-accent .nj-code,
+.nj-md-on-accent .nj-pre {
+  background: rgba(0,0,0,0.12);
+  border-color: transparent;
+}

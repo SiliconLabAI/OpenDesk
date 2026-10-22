@@ -267,11 +267,9 @@ function ChatPage() {
                     /{m.skillSlug}
                   </div>
                 )}
-                {m.role === 'assistant' ? (
+                <div className={m.role === 'user' ? 'nj-md-on-accent' : ''}>
                   <Markdown content={m.content} />
-                ) : (
-                  <div className="whitespace-pre-wrap">{m.content}</div>
-                )}
+                </div>
               </div>
             </div>
           ))}

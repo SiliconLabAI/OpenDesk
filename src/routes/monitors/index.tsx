@@ -5,6 +5,11 @@ import { z } from 'zod'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
 import { runDetectorJob } from '~/lib/detector/run'
 import { loadSettings } from '~/lib/settings/client'
+import {
+  loadProfile,
+  profileToPromptBlock,
+} from '~/lib/profile'
+import { generateMonitorDraft } from '~/lib/monitors/generate'
 
 const listMonitors = createServerFn({ method: 'GET' }).handler(async () => {
   if (!hasSupabaseConfig()) {
@@ -78,7 +83,6 @@ const deleteMonitor = createServerFn({ method: 'POST' })
       return { ok: false as const, error: 'Supabase not configured' }
     }
     const sb = getServiceSupabase()
-    // Soft-clean related seen signals for this monitor
     await sb.from('seen_signals').delete().eq('monitor_id', data.id)
     const { error } = await sb.from('monitors').delete().eq('id', data.id)
     if (error) return { ok: false as const, error: error.message }
@@ -97,7 +101,9 @@ function MonitorsPage() {
   const [slug, setSlug] = useState('')
   const [clientName, setClientName] = useState('')
   const [topics, setTopics] = useState('')
+  const [aiHint, setAiHint] = useState('')
   const [msg, setMsg] = useState('')
+  const [busy, setBusy] = useState(false)
 
   async function onCreate(e: React.FormEvent) {
     e.preventDefault()
@@ -114,11 +120,43 @@ function MonitorsPage() {
     if (res.ok) router.invalidate()
   }
 
-  async function onDelete(id: string, title: string) {
-    if (!confirm(`Remove monitor “${title}”? This cannot be undone.`)) return
+  async function onDelete(id: string, t: string) {
+    if (!confirm(`Remove monitor “${t}”? This cannot be undone.`)) return
     const res = await deleteMonitor({ data: { id } })
     setMsg(res.ok ? 'Monitor removed.' : res.error || 'Delete failed')
     if (res.ok) router.invalidate()
+  }
+
+  async function onAiGenerate() {
+    const profile = profileToPromptBlock(loadProfile())
+    if (!profile.trim()) {
+      setMsg('Save a client profile first (Profile page), then generate.')
+      return
+    }
+    setBusy(true)
+    setMsg('Generating monitor from profile…')
+    try {
+      const res = await generateMonitorDraft({
+        data: {
+          profile,
+          hint: aiHint || undefined,
+          settings: loadSettings(),
+        },
+      })
+      if (res.ok && res.draft) {
+        setTitle(res.draft.title)
+        setSlug(res.draft.slug)
+        setClientName(res.draft.clientName || loadProfile().name)
+        setTopics(res.draft.topics)
+        setMsg(`AI draft ready via ${res.provider}. Review and Create.`)
+      } else {
+        setMsg(res.error || 'Generate failed')
+      }
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -126,8 +164,8 @@ function MonitorsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Monitors</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          Full Mode monitoring profiles. Detector uses Settings (LLM + Medialyst or
-          Manus fallback) when you run a job.
+          Full Mode monitoring profiles. Create manually or let AI draft from your
+          client profile.
         </p>
       </div>
 
@@ -197,46 +235,66 @@ function MonitorsPage() {
         )}
       </ul>
 
-      <form
-        onSubmit={onCreate}
-        className="space-y-3 rounded-xl border border-[var(--border)] p-4"
-      >
+      <div className="space-y-3 rounded-xl border border-[var(--border)] p-4">
         <h2 className="font-semibold">New monitor</h2>
-        <input
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="Title"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
-        />
-        <input
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="Slug (optional)"
-          value={slug}
-          onChange={(e) => setSlug(e.target.value)}
-        />
-        <input
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="Client name"
-          value={clientName}
-          onChange={(e) => setClientName(e.target.value)}
-          required
-        />
-        <textarea
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
-          placeholder="Topics (comma or newline separated)"
-          rows={3}
-          value={topics}
-          onChange={(e) => setTopics(e.target.value)}
-        />
-        <button
-          type="submit"
-          className="rounded-lg px-4 py-2 text-sm font-semibold"
-          style={{ background: 'var(--accent)', color: '#0a0a0b' }}
-        >
-          Create monitor
-        </button>
-      </form>
+
+        <div className="rounded-lg border border-dashed border-[var(--border)] p-3 space-y-2 bg-[var(--bg)]/40">
+          <div className="text-xs text-[var(--muted)]">
+            AI from profile ({loadProfile().name || 'no profile name'})
+          </div>
+          <input
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            placeholder="Optional hint — e.g. focus on EU regulation"
+            value={aiHint}
+            onChange={(e) => setAiHint(e.target.value)}
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onAiGenerate}
+            className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-40"
+          >
+            {busy ? 'Generating…' : 'Generate with AI'}
+          </button>
+        </div>
+
+        <form onSubmit={onCreate} className="space-y-3">
+          <input
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            placeholder="Title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            required
+          />
+          <input
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            placeholder="Slug (optional)"
+            value={slug}
+            onChange={(e) => setSlug(e.target.value)}
+          />
+          <input
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            placeholder="Client name"
+            value={clientName}
+            onChange={(e) => setClientName(e.target.value)}
+            required
+          />
+          <textarea
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+            placeholder="Topics (comma or newline separated)"
+            rows={3}
+            value={topics}
+            onChange={(e) => setTopics(e.target.value)}
+          />
+          <button
+            type="submit"
+            className="rounded-lg px-4 py-2 text-sm font-semibold"
+            style={{ background: 'var(--accent)', color: '#0a0a0b' }}
+          >
+            Create monitor
+          </button>
+        </form>
+      </div>
 
       {msg && <p className="text-sm text-[var(--muted)]">{msg}</p>}
     </div>

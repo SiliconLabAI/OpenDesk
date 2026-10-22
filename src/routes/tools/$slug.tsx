@@ -13,6 +13,7 @@ import {
 import { loadSettings } from '~/lib/settings/client'
 import { enrichSkillInputs } from '~/lib/auto/research'
 import { Markdown } from '~/components/Markdown'
+import { loadSkillDraft, saveSkillDraft } from '~/lib/skills/drafts'
 
 export const Route = createFileRoute('/tools/$slug')({
   component: ToolPage,
@@ -44,7 +45,23 @@ function ToolPage() {
 
   useEffect(() => {
     setHasProfile(profileReady())
-  }, [])
+    ;(async () => {
+      if (!skill) return
+      try {
+        const draft = await loadSkillDraft({ data: { skillSlug: skill.slug } })
+        if (draft.ok && draft.values) {
+          setValues((prev) => ({ ...prev, ...draft.values }))
+          setStatus(
+            draft.updatedAt
+              ? `Loaded saved draft (${new Date(draft.updatedAt).toLocaleString()})`
+              : 'Loaded saved draft',
+          )
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+  }, [skill])
 
   if (!skill) {
     return (
@@ -94,6 +111,31 @@ function ToolPage() {
             : 'Nothing empty to fill (or LLM unavailable).',
         )
       }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onSaveDraft() {
+    if (!skill) return
+    setBusy(true)
+    setError('')
+    try {
+      const res = await saveSkillDraft({
+        data: {
+          skillSlug: skill.slug,
+          values,
+          title: skill.name,
+          profileName: loadProfile().name || undefined,
+        },
+      })
+      setStatus(
+        res.ok
+          ? 'Draft saved to Supabase for this skill.'
+          : res.error || 'Save failed',
+      )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -285,18 +327,28 @@ function ToolPage() {
           </label>
         ))}
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
-          style={{ background: 'var(--accent)', color: '#0a0a0b' }}
-        >
-          {busy
-            ? 'Running…'
-            : skill.browserWorker
-              ? 'Start Manus job'
-              : 'Run skill'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
+            style={{ background: 'var(--accent)', color: '#0a0a0b' }}
+          >
+            {busy
+              ? 'Running…'
+              : skill.browserWorker
+                ? 'Start Manus job'
+                : 'Run skill'}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onSaveDraft}
+            className="rounded-lg border border-[var(--border)] px-4 py-2.5 text-sm disabled:opacity-40"
+          >
+            Save draft to Supabase
+          </button>
+        </div>
       </form>
 
       {error && (

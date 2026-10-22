@@ -24,9 +24,10 @@ function ProfilePage() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const [previewField, setPreviewField] = useState<
+  /** which field is in text-edit mode (others show rendered markdown) */
+  const [editing, setEditing] = useState<
     'standing' | 'beats' | 'competitors' | 'notes' | null
-  >('standing')
+  >(null)
 
   useEffect(() => {
     setProfile(loadProfile())
@@ -35,6 +36,7 @@ function ProfilePage() {
   function onSave(e: React.FormEvent) {
     e.preventDefault()
     saveProfile(profile)
+    setEditing(null)
     setSaved(true)
     setMsg(
       hasMinimumProfile(profile)
@@ -51,6 +53,7 @@ function ProfilePage() {
     }
     setBusy(true)
     setMsg('Researching website…')
+    setEditing(null)
     try {
       const res = await researchFromWebsite({
         data: {
@@ -68,7 +71,7 @@ function ProfilePage() {
           notes: res.profile.notes || '',
         })
         setMsg(
-          `Filled all fields via ${res.provider}. Review markdown fields, then Save.`,
+          `Filled all fields via ${res.provider}. Review rendered markdown, then Save.`,
         )
       } else {
         setMsg(
@@ -88,9 +91,9 @@ function ProfilePage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Client profile</h1>
         <p className="mt-2 text-[var(--muted)] text-sm leading-relaxed">
-          Required before running skills or chat. Research fills{' '}
-          <strong>each field</strong> from a website (JSON-mapped). Standing,
-          beats, competitors, and notes support markdown.
+          Required before running skills or chat. Research fills each field from a
+          website. Standing, beats, competitors, and notes are shown as{' '}
+          <strong>markdown</strong> (click a field to edit the source).
         </p>
       </div>
 
@@ -139,35 +142,42 @@ function ProfilePage() {
           ] as const
         ).map(([key, label]) => (
           <div key={key} className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{label}</span>
               <button
                 type="button"
-                className="text-xs text-[var(--accent-dim)]"
+                className="text-xs text-[var(--muted)] hover:text-[var(--text)]"
                 onClick={() =>
-                  setPreviewField((cur) => (cur === key ? null : key))
+                  setEditing((cur) => (cur === key ? null : key))
                 }
               >
-                {previewField === key ? 'Edit' : 'Preview markdown'}
+                {editing === key ? 'Done editing' : 'Edit'}
               </button>
             </div>
-            {previewField === key ? (
-              <div className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 min-h-[5rem]">
-                {profile[key]?.trim() ? (
-                  <Markdown content={profile[key]} />
-                ) : (
-                  <span className="text-sm text-[var(--muted)]">Empty</span>
-                )}
-              </div>
-            ) : (
+            {editing === key ? (
               <textarea
-                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm min-h-[5rem] font-mono"
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm min-h-[6rem] font-mono"
                 value={profile[key]}
                 onChange={(e) =>
                   setProfile((p) => ({ ...p, [key]: e.target.value }))
                 }
-                placeholder="Markdown supported…"
+                placeholder="Markdown source…"
+                autoFocus
               />
+            ) : (
+              <div
+                className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3 min-h-[4rem] cursor-text"
+                onClick={() => setEditing(key)}
+                title="Click to edit"
+              >
+                {profile[key]?.trim() ? (
+                  <Markdown content={profile[key]} />
+                ) : (
+                  <span className="text-sm text-[var(--muted)]">
+                    Empty — click to edit
+                  </span>
+                )}
+              </div>
             )}
           </div>
         ))}
