@@ -26,7 +26,12 @@ function inline(s: string): string {
   let t = escapeHtml(s)
   t = t.replace(
     /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
-    '<a href="$2" target="_blank" rel="noreferrer" class="text-[var(--accent-dim)] underline">$1</a>',
+    '<a href="$2" target="_blank" rel="noreferrer" class="text-[var(--accent-dim)] underline break-all">$1</a>',
+  )
+  // Autolink bare URLs
+  t = t.replace(
+    /(?<!["'=])(https?:\/\/[^\s<]+)/g,
+    '<a href="$1" target="_blank" rel="noreferrer" class="text-[var(--accent-dim)] underline break-all">$1</a>',
   )
   t = t.replace(/`([^`]+)`/g, '<code class="nj-code">$1</code>')
   t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')

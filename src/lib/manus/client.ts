@@ -142,11 +142,16 @@ export async function manusListMessages(
   taskId: string,
   limit = 20,
   ctx?: ManusCtx,
+  opts?: { verbose?: boolean; markdownFormat?: 'markdown' | 'pdf' | 'docx' },
 ) {
   const url = new URL(`${BASE}/v2/task.listMessages`)
   url.searchParams.set('task_id', taskId)
   url.searchParams.set('order', 'desc')
   url.searchParams.set('limit', String(limit))
+  if (opts?.verbose) url.searchParams.set('verbose', 'true')
+  if (opts?.markdownFormat) {
+    url.searchParams.set('markdown_format', opts.markdownFormat)
+  }
   const res = await fetch(url.toString(), {
     headers: { 'x-manus-api-key': resolveKey(ctx) },
   })
@@ -348,6 +353,111 @@ export function isSubstantialManusResearch(text: string): boolean {
  * Turn Manus sandbox paths (/home/ubuntu/...) into browser-openable preview URLs.
  * Pattern: https://manus.im/app/{taskId}?previewEventId={eventId}&previewSandboxPath={encodedPath}
  */
+
+/**
+ * Download markdown/file attachments from listMessages and inline their content.
+ * Prefer attachment.url (presigned) over opening manus.im preview pages.
+ */
+export async function expandManusMarkdownAttachments(
+  listMessagesResponse: unknown,
+  extracted: ReturnType<typeof extractManusResults>,
+): Promise<{ text: string; files: Array<{ filename: string; path?: string; content: string; url?: string }> }> {
+  const data = listMessagesResponse as {
+    messages?: Array<Record<string, unknown>>
+  }
+  const messages = data.messages || []
+  const files: Array<{
+    filename: string
+    path?: string
+    content: string
+    url?: string
+  }> = []
+
+  const seen = new Set<string>()
+
+  for (const m of messages) {
+    const am = (m.assistant_message || m.user_message) as
+      | { attachments?: unknown }
+      | undefined
+    if (!am || !Array.isArray(am.attachments)) continue
+    for (const a of am.attachments) {
+      if (!a || typeof a !== 'object') continue
+      const att = a as {
+        url?: string
+        path?: string
+        filename?: string
+        content_type?: string
+        type?: string
+      }
+      const name = att.filename || att.path || 'file'
+      const isMd =
+        /\.(md|markdown)$/i.test(name) ||
+        /markdown/i.test(att.content_type || '') ||
+        /\.md$/i.test(att.path || '')
+      if (!att.url || !isMd) continue
+      const key = att.url
+      if (seen.has(key)) continue
+      seen.add(key)
+      try {
+        const res = await fetch(att.url)
+        if (!res.ok) continue
+        const content = await res.text()
+        if (content && content.trim().length > 20) {
+          files.push({
+            filename: name.split('/').pop() || name,
+            path: att.path,
+            content: content.trim(),
+            url: att.url,
+          })
+        }
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  // Also try fileUrls that look like md downloads
+  for (const u of extracted.fileUrls || []) {
+    if (seen.has(u)) continue
+    if (!/\.(md|markdown)(\?|$)/i.test(u) && !u.includes('markdown')) continue
+    seen.add(u)
+    try {
+      const res = await fetch(u)
+      if (!res.ok) continue
+      const content = await res.text()
+      if (content && content.trim().length > 20) {
+        files.push({
+          filename: u.split('/').pop()?.split('?')[0] || 'report.md',
+          content: content.trim(),
+          url: u,
+        })
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  let text = extracted.text || ''
+  if (files.length) {
+    // Prefer file bodies as primary research when longer than chat acks
+    const longest = files.slice().sort((a, b) => b.content.length - a.content.length)[0]
+    if (longest.content.length > (text?.length || 0) || isSubstantialManusResearch(longest.content)) {
+      text = files
+        .map(
+          (f) =>
+            `### ${f.filename}\n\n${f.content}`,
+        )
+        .join('\n\n---\n\n')
+    } else {
+      text =
+        (text ? text + '\n\n' : '') +
+        files.map((f) => `### ${f.filename}\n\n${f.content}`).join('\n\n---\n\n')
+    }
+  }
+
+  return { text, files }
+}
+
 export function rewriteManusSandboxLinks(
   text: string,
   opts: { taskId?: string; taskUrl?: string; eventId?: string },

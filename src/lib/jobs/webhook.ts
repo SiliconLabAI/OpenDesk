@@ -2,6 +2,7 @@ import { createHash, createVerify, createPublicKey } from 'node:crypto'
 import {
   extractManusResults,
   isSubstantialManusResearch,
+  expandManusMarkdownAttachments,
   manusListMessages,
   manusPublicKey,
   type ManusWebhookEnvelope,
@@ -187,8 +188,16 @@ export async function handleManusWebhook(
     const artifactUrls: string[] = []
 
     try {
-      const messages = await manusListMessages(taskId, 30)
-      const extracted = extractManusResults(messages)
+      const messages = await manusListMessages(taskId, 30, undefined, {
+        markdownFormat: 'markdown',
+      })
+      let extracted = extractManusResults(messages)
+      try {
+        const expanded = await expandManusMarkdownAttachments(messages, extracted)
+        if (expanded.text) {
+          extracted = { ...extracted, text: expanded.text }
+        }
+      } catch { /* */ }
       if (extracted.text) output_text = extracted.text
       artifactUrls.push(...extracted.fileUrls)
       output = {

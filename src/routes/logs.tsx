@@ -20,6 +20,25 @@ type LogRow = {
   created_at: string
 }
 
+function Section({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] uppercase tracking-wide text-[var(--muted)] font-medium">
+        {title}
+      </div>
+      <div className="rounded-lg bg-[var(--bg)] border border-[var(--border)] p-2.5 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-words">
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function LogsPage() {
   const [logs, setLogs] = useState<LogRow[]>([])
   const [error, setError] = useState('')
@@ -62,9 +81,8 @@ function LogsPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Logs</h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            LLM, Manus, chat, and skill API traces stored in Supabase{' '}
-            <code className="text-xs">app_logs</code>. Apply migration{' '}
-            <code className="text-xs">005_app_logs.sql</code>.
+            LLM, Manus, chat, and skill API traces in{' '}
+            <code className="text-xs">app_logs</code>
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -120,15 +138,18 @@ function LogsPage() {
         </p>
       )}
 
-      <ul className="space-y-2">
+      <ul className="space-y-3">
         {logs.map((log) => {
           const isOpen = openId === log.id
           const levelColor =
             log.level === 'error'
-              ? 'text-red-400'
+              ? 'bg-red-500/15 text-red-400 border-red-500/30'
               : log.level === 'warn'
-                ? 'text-amber-400'
-                : 'text-[var(--muted)]'
+                ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                : log.level === 'debug'
+                  ? 'bg-slate-500/15 text-slate-400 border-slate-500/30'
+                  : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+
           return (
             <li
               key={log.id}
@@ -136,53 +157,93 @@ function LogsPage() {
             >
               <button
                 type="button"
-                className="w-full text-left px-4 py-3 flex flex-wrap gap-x-3 gap-y-1 items-center text-sm"
+                className="w-full text-left px-4 py-3 space-y-2 hover:bg-[var(--surface-2)]/40 transition-colors"
                 onClick={() => setOpenId(isOpen ? null : log.id)}
               >
-                <span className={`font-mono text-xs uppercase ${levelColor}`}>
-                  {log.level}
-                </span>
-                <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">
-                  {log.kind}
-                </span>
-                <span className="text-xs text-[var(--muted)]">{log.source}</span>
-                <span className="flex-1 min-w-[8rem] truncate">{log.message}</span>
-                {log.duration_ms != null && (
-                  <span className="text-xs text-[var(--muted)]">
-                    {log.duration_ms}ms
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full border ${levelColor}`}
+                  >
+                    {log.level}
                   </span>
-                )}
-                <span className="text-xs text-[var(--muted)]">
-                  {new Date(log.created_at).toLocaleString()}
-                </span>
-              </button>
-              {isOpen && (
-                <div className="border-t border-[var(--border)] px-4 py-3 space-y-2 text-xs font-mono">
+                  <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-[var(--border)] text-[var(--muted)]">
+                    {log.kind}
+                  </span>
+                  <span className="text-xs text-[var(--muted)] font-mono">
+                    {log.source}
+                  </span>
+                  <span className="ml-auto text-xs text-[var(--muted)]">
+                    {new Date(log.created_at).toLocaleString()}
+                  </span>
+                </div>
+                <div className="text-sm text-[var(--text)] leading-snug">
+                  {log.message}
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] text-[var(--muted)]">
+                  {log.duration_ms != null && (
+                    <span>{log.duration_ms} ms</span>
+                  )}
                   {log.error && (
-                    <div className="text-red-400 whitespace-pre-wrap">
+                    <span className="text-red-400 truncate max-w-md">
                       {log.error}
-                    </div>
+                    </span>
                   )}
-                  <div>
-                    <div className="text-[var(--muted)] mb-1">request</div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap bg-[var(--bg)] p-2 rounded-lg">
-                      {JSON.stringify(log.request, null, 2)}
-                    </pre>
-                  </div>
-                  <div>
-                    <div className="text-[var(--muted)] mb-1">response</div>
-                    <pre className="overflow-x-auto whitespace-pre-wrap bg-[var(--bg)] p-2 rounded-lg">
-                      {JSON.stringify(log.response, null, 2)}
-                    </pre>
-                  </div>
+                  <span className="text-[var(--muted)]">
+                    {isOpen ? '▾ hide details' : '▸ show details'}
+                  </span>
+                </div>
+              </button>
+
+              {isOpen && (
+                <div className="border-t border-[var(--border)] px-4 py-3 grid gap-3 sm:grid-cols-1">
+                  {log.error && (
+                    <Section title="Error">
+                      <span className="text-red-400">{log.error}</span>
+                    </Section>
+                  )}
+                  <Section title="Request">
+                    {JSON.stringify(log.request ?? {}, null, 2)}
+                  </Section>
+                  <Section title="Response">
+                    {JSON.stringify(log.response ?? {}, null, 2)}
+                  </Section>
                   {log.meta && Object.keys(log.meta).length > 0 && (
-                    <div>
-                      <div className="text-[var(--muted)] mb-1">meta</div>
-                      <pre className="overflow-x-auto whitespace-pre-wrap bg-[var(--bg)] p-2 rounded-lg">
-                        {JSON.stringify(log.meta, null, 2)}
-                      </pre>
-                    </div>
+                    <Section title="Meta">
+                      {JSON.stringify(log.meta, null, 2)}
+                    </Section>
                   )}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] text-[var(--muted)]">
+                    <div>
+                      <div className="uppercase tracking-wide text-[10px]">
+                        Kind
+                      </div>
+                      <div className="text-[var(--text)]">{log.kind}</div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wide text-[10px]">
+                        Source
+                      </div>
+                      <div className="text-[var(--text)]">{log.source}</div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wide text-[10px]">
+                        Duration
+                      </div>
+                      <div className="text-[var(--text)]">
+                        {log.duration_ms != null
+                          ? `${log.duration_ms} ms`
+                          : '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="uppercase tracking-wide text-[10px]">
+                        Id
+                      </div>
+                      <div className="text-[var(--text)] font-mono truncate">
+                        {log.id}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               )}
             </li>

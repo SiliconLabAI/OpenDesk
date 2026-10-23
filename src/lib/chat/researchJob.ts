@@ -12,6 +12,7 @@ import {
   manusCreateTask,
   manusGetTask,
   manusListMessages,
+  expandManusMarkdownAttachments,
   rewriteManusSandboxLinks,
 } from '~/lib/manus/client'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
@@ -435,8 +436,25 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
     const ctx = { apiKey: settings.manusApiKey || undefined }
 
     try {
-      const messages = await manusListMessages(taskId, 50, ctx)
-      const extracted = extractManusResults(messages)
+      const messages = await manusListMessages(taskId, 50, ctx, {
+        markdownFormat: 'markdown',
+      })
+      let extracted = extractManusResults(messages)
+      try {
+        const expanded = await expandManusMarkdownAttachments(messages, extracted)
+        if (expanded.text) {
+          extracted = {
+            ...extracted,
+            text: expanded.text,
+            allTexts: [
+              ...(extracted.allTexts || []),
+              ...expanded.files.map((f) => f.content),
+            ],
+          }
+        }
+      } catch {
+        /* keep extracted */
+      }
 
       // Task status — only treat as done when agent stopped AND we have substance
       let agentStatus = ''
@@ -530,8 +548,14 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
       if (terminal && extracted.text && !substantial) {
         // One more listMessages in case final message lag
         await new Promise((r) => setTimeout(r, 2000))
-        const messages2 = await manusListMessages(taskId, 50, ctx)
-        const ex2 = extractManusResults(messages2)
+        const messages2 = await manusListMessages(taskId, 50, ctx, {
+          markdownFormat: 'markdown',
+        })
+        let ex2 = extractManusResults(messages2)
+        try {
+          const exp2 = await expandManusMarkdownAttachments(messages2, ex2)
+          if (exp2.text) ex2 = { ...ex2, text: exp2.text }
+        } catch { /* */ }
         if (isSubstantialManusResearch(ex2.text)) {
           const done = await completeChatResearchJob(
             data.jobId,
