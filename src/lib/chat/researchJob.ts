@@ -14,6 +14,7 @@ import {
   manusGetTask,
   manusListMessages,
   expandManusMarkdownAttachments,
+  formatManusAttachmentsSection,
   rewriteManusSandboxLinks,
 } from '~/lib/manus/client'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
@@ -52,6 +53,7 @@ export async function completeChatResearchJob(
   jobId: string,
   researchText: string,
   taskUrl?: string,
+  attachmentsMarkdown?: string,
 ): Promise<{ ok: boolean; content?: string; error?: string }> {
   if (!hasSupabaseConfig()) {
     return { ok: false, error: 'No Supabase' }
@@ -107,6 +109,7 @@ ${research}
 ${taskUrl ? `\nManus task: ${taskUrl}` : ''}
 
 When citing downloads, keep full https://manus.im/app/... preview URLs (with previewSandboxPath). Never emit bare /home/ubuntu/... paths.
+If an ## Attachments section is present in the research, include those links (or an equivalent Attachments section) in your reply.
 
 Respond in clear markdown to the user's latest message using this research.`
 
@@ -118,10 +121,16 @@ Respond in clear markdown to the user's latest message using this research.`
   try {
     const { text, provider } = await callLlm(settings, system, user)
     // Ensure any leftover sandbox paths become Manus preview URLs
-    const finalText = rewriteManusSandboxLinks(text, {
+    let finalText = rewriteManusSandboxLinks(text, {
       taskId,
       taskUrl: taskUrl || (job.manus_task_url as string) || undefined,
     })
+    const att =
+      attachmentsMarkdown ||
+      ((job.output as { attachments_markdown?: string } | null)?.attachments_markdown)
+    if (att && !finalText.includes('## Attachments')) {
+      finalText = finalText.trimEnd() + '\n\n' + att
+    }
     await sb
       .from('jobs')
       .update({
@@ -460,15 +469,22 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
         markdownFormat: 'markdown',
       })
       let extracted = extractManusResults(messages)
+      let expandedFiles: Array<{
+        filename: string
+        path?: string
+        content: string
+        url?: string
+      }> = []
       try {
         const expanded = await expandManusMarkdownAttachments(messages, extracted)
+        expandedFiles = expanded.files || []
         if (expanded.text) {
           extracted = {
             ...extracted,
             text: expanded.text,
             allTexts: [
               ...(extracted.allTexts || []),
-              ...expanded.files.map((f) => f.content),
+              ...expanded.files.map((f) => f.content).filter(Boolean),
             ],
           }
         }
@@ -531,23 +547,33 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
           taskUrl: job.manus_task_url || undefined,
           eventId: ((extracted as { eventIds?: string[] }).eventIds || [])[0],
         })
-        // Append download links for sandbox files if not already in text
-        const paths = (extracted as { sandboxPaths?: string[] }).sandboxPaths || []
+        const attSection = formatManusAttachmentsSection({
+          files: (expandedFiles as { filename: string; path?: string; url?: string; content?: string }[]) || [],
+          fileUrls: extracted.fileUrls,
+          sandboxPaths: extracted.sandboxPaths,
+          taskId,
+          taskUrl: job.manus_task_url || undefined,
+          eventId: ((extracted as { eventIds?: string[] }).eventIds || [])[0],
+        })
         let researchBlock = rewritten
-        for (const sp of paths) {
-          if (!researchBlock.includes(sp) && !researchBlock.includes(encodeURIComponent(sp))) {
-            const link = rewriteManusSandboxLinks(sp, {
-              taskId,
-              taskUrl: job.manus_task_url || undefined,
-              eventId: ((extracted as { eventIds?: string[] }).eventIds || [])[0],
-            })
-            researchBlock += `\n\n[Download ${sp.split('/').pop()}](${link})`
-          }
+        if (attSection && !researchBlock.includes('## Attachments')) {
+          researchBlock = researchBlock.trimEnd() + '\n\n' + attSection
         }
+        // Persist attachment section on job for webhook/complete path
+        await sb
+          .from('jobs')
+          .update({
+            output: {
+              ...((typeof job.output === 'object' && job.output) || {}),
+              attachments_markdown: attSection || null,
+            },
+          })
+          .eq('id', data.jobId)
         const done = await completeChatResearchJob(
           data.jobId,
           researchBlock,
           job.manus_task_url || undefined,
+          attSection || undefined,
         )
         if (done.ok) {
           return {

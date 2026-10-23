@@ -3,6 +3,7 @@ import {
   extractManusResults,
   isSubstantialManusResearch,
   expandManusMarkdownAttachments,
+  formatManusAttachmentsSection,
   manusListMessages,
   manusPublicKey,
   type ManusWebhookEnvelope,
@@ -244,14 +245,32 @@ export async function handleManusWebhook(
         markdownFormat: 'markdown',
       })
       let extracted = extractManusResults(messages)
+      let expanded: Awaited<ReturnType<typeof expandManusMarkdownAttachments>> | null =
+        null
       try {
-        const expanded = await expandManusMarkdownAttachments(messages, extracted)
+        expanded = await expandManusMarkdownAttachments(messages, extracted)
         if (expanded.text) {
           extracted = { ...extracted, text: expanded.text }
         }
       } catch { /* */ }
       if (extracted.text) output_text = extracted.text
       artifactUrls.push(...extracted.fileUrls)
+      const attSection = formatManusAttachmentsSection({
+        files: expanded?.files,
+        fileUrls: extracted.fileUrls,
+        sandboxPaths: extracted.sandboxPaths,
+        taskId,
+        taskUrl: job.manus_task_url || undefined,
+      })
+      if (attSection && output_text && !String(output_text).includes('## Attachments')) {
+        output_text = String(output_text).trimEnd() + '\n\n' + attSection
+      }
+      if (attSection) {
+        output = {
+          ...(typeof output === 'object' && output ? output : {}),
+          attachments_markdown: attSection,
+        }
+      }
       output = {
         ...(typeof output === 'object' && output ? output : {}),
         manus_messages_summary: true,
@@ -296,6 +315,7 @@ export async function handleManusWebhook(
           job.id,
           output_text,
           job.manus_task_url || undefined,
+          (output as { attachments_markdown?: string })?.attachments_markdown,
         )
         await writeAppLog({
           level: done.ok ? 'info' : 'error',

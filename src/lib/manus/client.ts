@@ -396,25 +396,44 @@ export async function expandManusMarkdownAttachments(
         /\.(md|markdown)$/i.test(name) ||
         /markdown/i.test(att.content_type || '') ||
         /\.md$/i.test(att.path || '')
-      if (!att.url || !isMd) continue
-      const key = att.url
-      if (seen.has(key)) continue
-      seen.add(key)
-      try {
-        const res = await fetch(att.url)
-        if (!res.ok) continue
-        const content = await res.text()
-        if (content && content.trim().length > 20) {
+      if (!att.url) {
+        // path-only attachment — still record for preview links
+        if (att.path) {
           files.push({
             filename: name.split('/').pop() || name,
             path: att.path,
-            content: content.trim(),
-            url: att.url,
+            content: '',
+            url: undefined,
           })
         }
-      } catch {
-        /* skip */
+        continue
       }
+      const key = att.url
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (isMd) {
+        try {
+          const res = await fetch(att.url)
+          if (res.ok) {
+            const content = await res.text()
+            files.push({
+              filename: name.split('/').pop() || name,
+              path: att.path,
+              content: (content || '').trim(),
+              url: att.url,
+            })
+            continue
+          }
+        } catch {
+          /* fall through — still keep url */
+        }
+      }
+      files.push({
+        filename: name.split('/').pop() || name,
+        path: att.path,
+        content: '',
+        url: att.url,
+      })
     }
   }
 
@@ -458,6 +477,61 @@ export async function expandManusMarkdownAttachments(
   }
 
   return { text, files }
+}
+
+
+/** Build a markdown section listing Manus attachment download + preview URLs. */
+export function formatManusAttachmentsSection(
+  opts: {
+    files?: Array<{ filename: string; path?: string; content?: string; url?: string }>
+    fileUrls?: string[]
+    sandboxPaths?: string[]
+    taskId?: string
+    taskUrl?: string
+    eventId?: string
+  },
+): string {
+  const lines: string[] = []
+  const seen = new Set<string>()
+
+  const push = (label: string, url: string) => {
+    if (!url || seen.has(url)) return
+    seen.add(url)
+    lines.push(`- [${label}](${url})`)
+  }
+
+  for (const f of opts.files || []) {
+    const name = f.filename || f.path?.split('/').pop() || 'file'
+    if (f.url) push(name, f.url)
+    if (f.path && opts.taskId) {
+      const preview = rewriteManusSandboxLinks(f.path, {
+        taskId: opts.taskId,
+        taskUrl: opts.taskUrl,
+        eventId: opts.eventId,
+      })
+      if (preview.startsWith('http')) push(`${name} (Manus preview)`, preview)
+    }
+  }
+
+  for (const u of opts.fileUrls || []) {
+    const name = u.split('/').pop()?.split('?')[0] || 'attachment'
+    push(name, u)
+  }
+
+  for (const sp of opts.sandboxPaths || []) {
+    if (!opts.taskId) continue
+    const preview = rewriteManusSandboxLinks(sp, {
+      taskId: opts.taskId,
+      taskUrl: opts.taskUrl,
+      eventId: opts.eventId,
+    })
+    if (preview.startsWith('http')) {
+      push(sp.split('/').pop() || sp, preview)
+    }
+  }
+
+  if (!lines.length) return ''
+  return `## Attachments\n\n${lines.join('\n')}`
 }
 
 export function rewriteManusSandboxLinks(
