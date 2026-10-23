@@ -27,8 +27,8 @@ export async function manusResearchPrompt(
       {
         title: `newsjack research: ${prompt.slice(0, 40)}`,
         prompt,
-        agentProfile: 'lite',
-        timeoutMs: 120_000,
+        agentProfile: 'standard',
+        timeoutMs: 180_000,
         intervalMs: 3_000,
       },
       { apiKey: settings.manusApiKey || undefined },

@@ -263,16 +263,16 @@ function ChatPage() {
               <div
                 className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${
                   m.role === 'user'
-                    ? 'bg-[var(--accent)] text-[#0a0a0b]'
-                    : 'bg-[var(--surface-2)] border border-[var(--border)]'
+                    ? 'bg-[var(--surface-2)] border border-[var(--border)] text-[var(--text)]'
+                    : 'bg-[var(--bg)] border border-[var(--border)] text-[var(--text)]'
                 }`}
               >
                 {m.skillSlug && m.role === 'user' && (
-                  <div className="text-[10px] opacity-70 mb-1">
+                  <div className="text-[10px] text-[var(--muted)] mb-1 font-mono">
                     /{m.skillSlug}
                   </div>
                 )}
-                <div className={m.role === 'user' ? 'nj-md-on-accent' : ''}>
+                <div>
                   <Markdown content={m.content} />
                 </div>
               </div>
@@ -281,7 +281,10 @@ function ChatPage() {
 
           {busy && (
             <div className="flex justify-start">
-              <div className="rounded-2xl px-4 py-3 bg-[var(--surface-2)] border border-[var(--border)]">
+              <div className="rounded-2xl px-4 py-3 bg-[var(--bg)] border border-[var(--border)] space-y-2">
+                <div className="text-xs text-[var(--muted)]">
+                  Waiting for Manus research (up to ~3 min) then writing the reply…
+                </div>
                 <div className="shimmer-lines">
                   <div className="shimmer-line w-48" />
                   <div className="shimmer-line w-64" />

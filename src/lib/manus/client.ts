@@ -230,7 +230,9 @@ export function extractManusResults(listMessagesResponse: unknown): {
         texts.push(
           typeof so.value === 'string'
             ? so.value
-            : '```json' + JSON.stringify(so.value, null, 2) + '```',
+            : '```json
+' + JSON.stringify(so.value, null, 2) + '
+```',
         )
       }
     }
@@ -257,7 +259,9 @@ export function extractManusResults(listMessagesResponse: unknown): {
   }
 
   return {
-    text: texts.filter(Boolean).join('').trim(),
+    text: texts.filter(Boolean).join('
+
+').trim(),
     fileUrls: [...new Set(fileUrls)],
     statusHints,
     rawTypes,
@@ -362,6 +366,13 @@ export async function manusRunAndWait(
       timed_out: !text,
       status_hints: statusHints.slice(-5),
       message_types_seen: lastTypes.slice(0, 30),
+      message_sample: (() => {
+        try {
+          return JSON.stringify(lastTypes)
+        } catch {
+          return []
+        }
+      })(),
     },
   })
 
