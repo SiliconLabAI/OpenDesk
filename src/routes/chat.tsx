@@ -148,7 +148,7 @@ function ChatPage() {
         await persist(thread)
 
         const jobId = res.jobId
-        const maxAttempts = 60 // ~3 min at 3s
+        const maxAttempts = 90 // ~4.5 min at 3s
         for (let i = 0; i < maxAttempts; i++) {
           await new Promise((r) => setTimeout(r, 3000))
           const poll = await pollChatResearch({ data: { jobId } })

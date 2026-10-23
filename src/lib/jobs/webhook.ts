@@ -1,6 +1,7 @@
 import { createHash, createVerify, createPublicKey } from 'node:crypto'
 import {
   extractManusResults,
+  isSubstantialManusResearch,
   manusListMessages,
   manusPublicKey,
   type ManusWebhookEnvelope,
@@ -217,35 +218,59 @@ export async function handleManusWebhook(
       }
     }
 
-    // Chat research: run LLM with Manus text, then mark completed
-    if (job.kind === 'chat_research' && output_text) {
+    // Chat research: only complete when Manus returned real research (not an ack)
+    if (job.kind === 'chat_research') {
+      if (output_text && isSubstantialManusResearch(output_text)) {
+        await sb
+          .from('jobs')
+          .update({
+            manus_event_log: eventLog,
+            output: {
+              ...(typeof output === 'object' && output ? output : {}),
+              research_raw: true,
+            },
+          })
+          .eq('id', job.id)
+        const done = await completeChatResearchJob(
+          job.id,
+          output_text,
+          job.manus_task_url || undefined,
+        )
+        await writeAppLog({
+          level: done.ok ? 'info' : 'error',
+          kind: 'webhook',
+          source: 'manus',
+          message: done.ok
+            ? 'chat_research completed via callback'
+            : 'chat_research LLM failed',
+          meta: { job_id: job.id, task_id: taskId },
+          error: done.error,
+        })
+        return {
+          ok: true,
+          detail: done.ok
+            ? 'chat_research completed'
+            : `chat_research llm: ${done.error}`,
+        }
+      }
+      // Intermediate message / empty — keep waiting for a later event or poll
       await sb
         .from('jobs')
         .update({
+          status: 'waiting_manus',
           manus_event_log: eventLog,
-          output: {
-            ...(typeof output === 'object' && output ? output : {}),
-            research_raw: true,
-          },
+          output_text: output_text || null,
         })
         .eq('id', job.id)
-      const done = await completeChatResearchJob(
-        job.id,
-        output_text,
-        job.manus_task_url || undefined,
-      )
       await writeAppLog({
-        level: done.ok ? 'info' : 'error',
+        level: 'info',
         kind: 'webhook',
         source: 'manus',
-        message: done.ok ? 'chat_research completed via callback' : 'chat_research LLM failed',
-        meta: { job_id: job.id, task_id: taskId },
-        error: done.error,
+        message: 'chat_research: interim Manus text, still waiting',
+        meta: { job_id: job.id, task_id: taskId, text_len: (output_text || '').length },
+        response: { text_preview: (output_text || '').slice(0, 300) },
       })
-      return {
-        ok: true,
-        detail: done.ok ? 'chat_research completed' : `chat_research llm: ${done.error}`,
-      }
+      return { ok: true, detail: 'chat_research waiting for substantial research' }
     }
 
     await sb

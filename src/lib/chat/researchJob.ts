@@ -7,7 +7,9 @@ import { doctrineFor } from '~/lib/skills/doctrine'
 import {
   extractManusResults,
   hasManusConfig,
+  isSubstantialManusResearch,
   manusCreateTask,
+  manusGetTask,
   manusListMessages,
 } from '~/lib/manus/client'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
@@ -304,26 +306,59 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
       const messages = await manusListMessages(taskId, 50, ctx)
       const extracted = extractManusResults(messages)
 
+      // Task status — only treat as done when agent stopped AND we have substance
+      let agentStatus = ''
+      try {
+        const detail = await manusGetTask(taskId, ctx)
+        agentStatus = String(
+          (detail as { status?: string }).status ||
+            (detail as { task?: { status?: string } }).task?.status ||
+            (detail as { data?: { status?: string } }).data?.status ||
+            '',
+        )
+      } catch {
+        /* optional */
+      }
+
+      // Use longest substantial chunk among all assistant messages
+      const candidates = [
+        extracted.text,
+        ...((extracted as { allTexts?: string[] }).allTexts || []),
+      ].filter(Boolean)
+      const best =
+        candidates
+          .filter((c) => isSubstantialManusResearch(c))
+          .sort((a, b) => b.length - a.length)[0] || ''
+      const researchText = best || extracted.text
+      const substantial = isSubstantialManusResearch(researchText)
+      const terminal =
+        agentStatus === 'stopped' ||
+        agentStatus === 'completed' ||
+        agentStatus === 'error'
+
       await writeAppLog({
         level: 'debug',
         kind: 'manus',
         source: 'pollChatResearch',
-        message: `types=${extracted.rawTypes.join(',')}`,
+        message: `status=${agentStatus || '?'} substantial=${substantial} len=${extracted.text.length}`,
         meta: {
           job_id: data.jobId,
           task_id: taskId,
           text_len: extracted.text.length,
+          agent_status: agentStatus,
+          substantial,
         },
         response: {
-          text_preview: extracted.text.slice(0, 400),
-          types: extracted.rawTypes.slice(0, 20),
+          text_preview: extracted.text.slice(0, 500),
+          types: extracted.rawTypes.slice(0, 30),
         },
       })
 
-      if (extracted.text && extracted.text.length > 40) {
+      // Prefer waiting until substantial research text exists
+      if (substantial) {
         const done = await completeChatResearchJob(
           data.jobId,
-          extracted.text,
+          researchText,
           job.manus_task_url || undefined,
         )
         if (done.ok) {
@@ -338,6 +373,58 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
           ok: false as const,
           status: 'failed' as const,
           error: done.error,
+        }
+      }
+
+      // Terminal with only ack text → keep waiting a bit more is useless; report incomplete
+      if (terminal && extracted.text && !substantial) {
+        // One more listMessages in case final message lag
+        await new Promise((r) => setTimeout(r, 2000))
+        const messages2 = await manusListMessages(taskId, 50, ctx)
+        const ex2 = extractManusResults(messages2)
+        if (isSubstantialManusResearch(ex2.text)) {
+          const done = await completeChatResearchJob(
+            data.jobId,
+            ex2.text,
+            job.manus_task_url || undefined,
+          )
+          if (done.ok) {
+            return {
+              ok: true as const,
+              status: 'completed' as const,
+              content: done.content || '',
+              manusTaskUrl: job.manus_task_url as string | undefined,
+            }
+          }
+        }
+        // Still no substance after stop — do not invent; surface Manus text + link
+        const fallback = [
+          '## Manus finished without usable article list',
+          '',
+          `Task status: **${agentStatus}**`,
+          job.manus_task_url ? `Open: ${job.manus_task_url}` : '',
+          '',
+          '### Raw Manus text',
+          extracted.text || '(empty)',
+          '',
+          'I will not invent headlines. Retry research or open the Manus task for the full agent transcript.',
+        ]
+          .filter(Boolean)
+          .join('\n')
+        await sb
+          .from('jobs')
+          .update({
+            status: 'completed',
+            output_text: fallback,
+            output: { incomplete_research: true, agent_status: agentStatus },
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', data.jobId)
+        return {
+          ok: true as const,
+          status: 'completed' as const,
+          content: fallback,
+          manusTaskUrl: job.manus_task_url as string | undefined,
         }
       }
     } catch (e) {
@@ -359,7 +446,7 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
         '',
         `Task: \`${taskId}\`${job.manus_task_url ? ` — [open](${job.manus_task_url})` : ''}`,
         '',
-        'Still waiting for Manus results (webhook or message poll).',
+        'Waiting for a **final** Manus research report (not the intermediate “searching…” message).',
       ].join('\n'),
       manusTaskUrl: job.manus_task_url as string | undefined,
     }

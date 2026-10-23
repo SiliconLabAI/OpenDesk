@@ -177,6 +177,7 @@ export async function manusGetTask(taskId: string, ctx?: ManusCtx) {
 /** Extract assistant text from task.listMessages (Manus v2 event shape). */
 export function extractManusResults(listMessagesResponse: unknown): {
   text: string
+  allTexts?: string[]
   fileUrls: string[]
   statusHints: string[]
   rawTypes: string[]
@@ -205,7 +206,6 @@ export function extractManusResults(listMessagesResponse: unknown): {
     const type = String(m.type || m.role || '')
     rawTypes.push(type)
 
-    // Manus v2: type === "assistant_message"
     if (type === 'assistant_message' || m.assistant_message) {
       const am = (m.assistant_message || m) as {
         content?: string | unknown
@@ -216,7 +216,11 @@ export function extractManusResults(listMessagesResponse: unknown): {
       } else if (Array.isArray(am.content)) {
         for (const part of am.content) {
           if (typeof part === 'string') texts.push(part)
-          else if (part && typeof part === 'object' && typeof (part as { text?: string }).text === 'string') {
+          else if (
+            part &&
+            typeof part === 'object' &&
+            typeof (part as { text?: string }).text === 'string'
+          ) {
             texts.push((part as { text: string }).text)
           }
         }
@@ -225,12 +229,15 @@ export function extractManusResults(listMessagesResponse: unknown): {
     }
 
     if (type === 'structured_output_result' && m.structured_output_result) {
-      const so = m.structured_output_result as { success?: boolean; value?: unknown }
+      const so = m.structured_output_result as {
+        success?: boolean
+        value?: unknown
+      }
       if (so.value != null) {
         texts.push(
           typeof so.value === 'string'
             ? so.value
-            : '```json' + JSON.stringify(so.value, null, 2) + '```',
+            : ('```' + 'json\n' + JSON.stringify(so.value, null, 2) + '\n```'),
         )
       }
     }
@@ -241,34 +248,84 @@ export function extractManusResults(listMessagesResponse: unknown): {
         brief?: string
         description?: string
       }
-      const hint = [su.agent_status, su.brief, su.description].filter(Boolean).join(' — ')
+      const hint = [su.agent_status, su.brief, su.description]
+        .filter(Boolean)
+        .join(' — ')
       if (hint) statusHints.push(hint)
     }
 
     if (type === 'error_message' || m.error_message) {
-      const em = (m.error_message || {}) as { content?: string; error_type?: string }
+      const em = (m.error_message || {}) as {
+        content?: string
+        error_type?: string
+      }
       if (em.content) statusHints.push(`error: ${em.content}`)
     }
 
-    // Fallback legacy shapes
     if (typeof m.content === 'string' && type !== 'user_message') {
       texts.push(m.content)
     }
   }
 
+  const cleaned = texts.filter(Boolean)
+  const text =
+    cleaned.length <= 1
+      ? (cleaned[0] || '').trim()
+      : cleaned.slice().sort((a, b) => b.length - a.length)[0].trim()
+
   return {
-    text: texts.filter(Boolean).join('').trim(),
+    text,
+    allTexts: cleaned,
     fileUrls: [...new Set(fileUrls)],
     statusHints,
     rawTypes,
   }
 }
 
-
 /**
  * Create task and poll until assistant_message appears or timeout.
  * Tasks are visible in Manus UI (hide_in_task_list: false).
  */
+
+/** True when text looks like finished research, not an intermediate ack. */
+export function isSubstantialManusResearch(text: string): boolean {
+  const t = (text || '').trim()
+  if (t.length < 180) return false
+  const lower = t.toLowerCase()
+  // Intermediate agent chatter
+  const ackPatterns = [
+    /i.?ll (review|search|look|start|begin)/i,
+    /let me (search|look|find|review)/i,
+    /i am (searching|looking|reviewing)/i,
+    /i.?m (searching|looking|reviewing|on it)/i,
+    /starting (the )?search/i,
+    /review the research guidance/i,
+    /then search current news/i,
+    /working on (it|this)/i,
+    /please wait/i,
+  ]
+  const onlyAck =
+    t.length < 600 &&
+    ackPatterns.some((re) => re.test(t)) &&
+    !/(https?:\/\/|www\.)/i.test(t)
+  if (onlyAck) return false
+
+  // Prefer signals of real coverage
+  const hasUrl = /https?:\/\/\S+/i.test(t)
+  const hasOutletish =
+    /\b(reuters|bloomberg|techcrunch|wsj|nytimes|forbes|the verge|wired|cnbc|bbc|guardian|axios|politico|pr newswire|business wire)\b/i.test(
+      t,
+    )
+  const hasStructure =
+    (t.match(/^#{1,3}\s/gm) || []).length >= 1 ||
+    (t.match(/^[-*]\s/gm) || []).length >= 2 ||
+    (t.match(/\n\d+\./g) || []).length >= 2
+  if (hasUrl || hasOutletish) return true
+  if (t.length >= 500 && hasStructure) return true
+  if (t.length >= 900) return true
+  return false
+}
+
 export async function manusRunAndWait(
   opts: {
     prompt: string
