@@ -10,6 +10,7 @@ import {
 } from '~/lib/manus/client'
 import { searchNews } from '~/lib/medialyst/client'
 import type { ClientProfile } from '~/lib/profile'
+import { getSkill } from '~/lib/skills/catalog'
 
 const SettingsPartial = z
   .object({
@@ -199,14 +200,35 @@ export const enrichSkillInputs = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const settings = resolveSettings(data.settings)
     const profile = data.profile || ''
+    const skill = getSkill(data.slug)
+    const fieldGuide =
+      skill?.inputs
+        .map(
+          (i) =>
+            `- ${i.id} (${i.label})${i.required ? ' [required]' : ''}: ${i.placeholder}`,
+        )
+        .join('\n') || Object.keys(data.values).join(', ')
+    const exampleHint = skill?.examples
+      ? `\n## Example shape (adapt to this client; do not copy blindly)\n${JSON.stringify(skill.examples, null, 2)}`
+      : ''
 
-    const system = `You help prefill newsjack skill forms.
-Given a client profile and partial inputs for skill "${data.slug}",
-return ONLY a JSON object mapping input field ids to suggested string values.
-Only fill fields that are empty. Do not invent hard facts without profile support.
-Keys must be from: ${JSON.stringify(Object.keys(data.values))}`
+    const system = `You prefill newsjack skill form fields for skill "/${data.slug}"${skill ? ` (${skill.name})` : ''}.
+${skill ? `Skill purpose: ${skill.description}` : ''}
+Return ONLY a JSON object mapping field ids to string values.
+Only fill fields that are currently empty. Prefer facts from the profile and user message.
+Do not invent hard news headlines or URLs.
+Keys must be from: ${JSON.stringify(Object.keys(data.values))}
 
-    const user = `## Profile\n${profile || '(none)'}\n\n## Current values\n${JSON.stringify(data.values, null, 2)}\n\nReturn JSON only.`
+Field guide:
+${fieldGuide}`
+
+    const user = `## Profile + user context
+${profile || '(none)'}
+
+## Current values
+${JSON.stringify(data.values, null, 2)}${exampleHint}
+
+Return JSON only.`
 
     try {
       const { text } = await callLlm(settings, system, user)

@@ -132,6 +132,7 @@ ${liveResearch}`
             data: {
               messages: data.messages,
               skillSlug: skill.slug,
+              skillValues: data.skillValues,
               profile: data.profile,
               settings: data.settings,
             },

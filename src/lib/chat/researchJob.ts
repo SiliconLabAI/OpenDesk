@@ -2,8 +2,9 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { callLlm } from '~/lib/llm/client'
 import { resolveSettings } from '~/lib/settings/resolve'
-import { getSkill } from '~/lib/skills/catalog'
-import { doctrineFor } from '~/lib/skills/doctrine'
+import { getSkill, type SkillDef } from '~/lib/skills/catalog'
+import { doctrineFor, ETHICS_FLOOR } from '~/lib/skills/doctrine'
+import { enrichSkillInputs } from '~/lib/auto/research'
 import {
   extractManusResults,
   hasManusConfig,
@@ -69,6 +70,7 @@ export async function completeChatResearchJob(
   const input = (job.input || {}) as {
     messages?: Array<{ role: string; content: string }>
     skillSlug?: string
+    skillValues?: Record<string, string>
     profile?: string
     settings?: Partial<ProviderSettings>
   }
@@ -156,12 +158,69 @@ Respond in clear markdown to the user's latest message using this research.`
   }
 }
 
+
+/**
+ * Build a Manus task prompt from skill doctrine + filled inputs (not a raw profile dump).
+ */
+export function buildManusSkillPrompt(opts: {
+  skill: SkillDef
+  values: Record<string, string>
+  profile: string
+  userMessage: string
+}): string {
+  const { skill, values, profile, userMessage } = opts
+  const filledBlocks = skill.inputs
+    .map((i) => {
+      const v = values[i.id]?.trim()
+      if (!v) return null
+      return `### ${i.label} (${i.id})\n${v}`
+    })
+    .filter(Boolean)
+    .join('\n\n')
+
+  // Short profile excerpt for standing only — full dump is not the task
+  const profileExcerpt = profile.trim().slice(0, 1200)
+
+  return `You are executing the newsjack skill **/${skill.slug}** (${skill.name}).
+
+## Skill purpose
+${skill.description}
+
+## When to use
+${skill.whenToUse}
+
+## Skill doctrine / instructions
+${doctrineFor(skill.slug)}
+
+${ETHICS_FLOOR}
+
+## Filled skill inputs
+${filledBlocks || '(none filled — use profile excerpt + user request only)'}
+
+## Client profile excerpt (context only — do not treat as the task)
+${profileExcerpt || '(none)'}
+
+## User request (chat)
+${userMessage}
+
+## Your job (Manus agent)
+1. Search the live web for current, real sources relevant to this skill and the filled inputs.
+2. Return a structured markdown research report the skill can use as ground truth.
+3. Include for each item when possible: title, outlet, date, URL, 1-line relevance to the skill inputs.
+4. Never invent headlines, URLs, journalists, or quotes.
+5. If evidence is thin, say so explicitly — do not pad with guesses.
+6. If you write files, use clear filenames; paths will be opened via Manus preview links.
+
+Focus on what **/${skill.slug}** needs — not a generic company brief.`
+}
+
 /** Start Manus research job for chat — returns immediately; poll or webhook finishes it. */
 export const startChatResearch = createServerFn({ method: 'POST' })
   .validator(
     z.object({
       messages: z.array(MessageSchema).min(1),
       skillSlug: z.string().optional(),
+      skillValues: z.record(z.string()).optional(),
       profile: z.string().min(1),
       settings: SettingsPartial,
     }),
@@ -185,22 +244,76 @@ export const startChatResearch = createServerFn({ method: 'POST' })
       [...data.messages].reverse().find((m) => m.role === 'user')?.content || ''
     const skill = data.skillSlug ? getSkill(data.skillSlug) : undefined
 
-    const prompt = `You are researching live news for a PR tool (newsjack).
+    // --- Auto-fill empty skill inputs via LLM from profile + user message ---
+    let skillValues: Record<string, string> = { ...(data.skillValues || {}) }
+    if (skill) {
+      const base = Object.fromEntries(
+        skill.inputs.map((i) => [i.id, skillValues[i.id] || '']),
+      )
+      // Seed first empty required field with user message if helpful
+      if (lastUser) {
+        for (const inp of skill.inputs) {
+          if (inp.required && !base[inp.id]?.trim()) {
+            base[inp.id] = lastUser
+            break
+          }
+        }
+      }
+      try {
+        const enriched = await enrichSkillInputs({
+          data: {
+            slug: skill.slug,
+            values: base,
+            profile: `${data.profile}
 
-Client profile:
-${data.profile.slice(0, 2500)}
+## Latest user message
+${lastUser}`,
+            settings: data.settings,
+          },
+        })
+        if (enriched.ok) {
+          skillValues = { ...base, ...enriched.values }
+        } else {
+          skillValues = base
+        }
+      } catch {
+        skillValues = base
+      }
 
-${skill ? `Skill: /${skill.slug} (${skill.name})` : ''}
-User request: ${lastUser}
+      // If still empty, fall back to skill examples as soft context (labeled)
+      for (const inp of skill.inputs) {
+        if (!skillValues[inp.id]?.trim() && skill.examples?.[inp.id]) {
+          skillValues[inp.id] = `(example seed — adapt to client)
+${skill.examples[inp.id]}`
+        }
+      }
+    }
 
-Search the live web for recent, real news relevant to this company and request.
-Return a detailed markdown report with articles: title, outlet, date, URL, one-line why it matters for this client.
+    const prompt = skill
+      ? buildManusSkillPrompt({
+          skill,
+          values: skillValues,
+          profile: data.profile,
+          userMessage: lastUser,
+        })
+      : `You are researching live news for newsjack (PR).
+
+## User request
+${lastUser}
+
+## Profile excerpt
+${data.profile.slice(0, 1200)}
+
+Search the live web for recent real articles relevant to this request.
+Return markdown with title, outlet, date, URL, relevance line each.
 Do not invent URLs or headlines.`
 
     try {
       const task = await manusCreateTask(
         {
-          title: `chat research: ${lastUser.slice(0, 40)}`,
+          title: skill
+            ? `/${skill.slug}: ${lastUser.slice(0, 32)}`
+            : `chat research: ${lastUser.slice(0, 40)}`,
           prompt,
           agentProfile: 'standard',
           clearConnectors: true,
@@ -221,8 +334,10 @@ Do not invent URLs or headlines.`
           input: {
             messages: data.messages,
             skillSlug: data.skillSlug,
+            skillValues,
             profile: data.profile,
             settings: data.settings,
+            manusPromptPreview: prompt.slice(0, 4000),
           },
           manus_task_id: task.task_id,
           manus_task_url: task.task_url || null,
@@ -243,6 +358,9 @@ Do not invent URLs or headlines.`
           job_id: job.id,
           task_id: task.task_id,
           task_url: task.task_url,
+          skill: skill?.slug,
+          skill_value_keys: Object.keys(skillValues).filter((k) => skillValues[k]?.trim()),
+          prompt_preview: prompt.slice(0, 500),
         },
       })
 
