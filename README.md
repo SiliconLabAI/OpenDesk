@@ -59,6 +59,7 @@ psql $DATABASE_URL -f supabase/migrations/002_auth_rls.sql
 psql $DATABASE_URL -f supabase/migrations/003_skill_drafts.sql
 psql $DATABASE_URL -f supabase/migrations/004_app_state.sql
 psql $DATABASE_URL -f supabase/migrations/005_app_logs.sql
+psql $DATABASE_URL -f supabase/migrations/006_job_kind_chat_research.sql
 ```
 
 Required env: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (and optional `DEFAULT_ORG_ID`).
