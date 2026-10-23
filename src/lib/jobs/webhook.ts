@@ -6,6 +6,8 @@ import {
   type ManusWebhookEnvelope,
 } from '~/lib/manus/client'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
+import { completeChatResearchJob } from '~/lib/chat/researchJob'
+import { writeAppLog } from '~/lib/logs/write'
 
 let cachedPublicKey: string | null = null
 
@@ -212,6 +214,37 @@ export async function handleManusWebhook(
       if (mention && !output_text.toLowerCase().includes(mention.toLowerCase())) {
         output_text +=
           '\n\n## QA warning\nClient mention not clearly present in Manus output text — review artifacts manually.'
+      }
+    }
+
+    // Chat research: run LLM with Manus text, then mark completed
+    if (job.kind === 'chat_research' && output_text) {
+      await sb
+        .from('jobs')
+        .update({
+          manus_event_log: eventLog,
+          output: {
+            ...(typeof output === 'object' && output ? output : {}),
+            research_raw: true,
+          },
+        })
+        .eq('id', job.id)
+      const done = await completeChatResearchJob(
+        job.id,
+        output_text,
+        job.manus_task_url || undefined,
+      )
+      await writeAppLog({
+        level: done.ok ? 'info' : 'error',
+        kind: 'webhook',
+        source: 'manus',
+        message: done.ok ? 'chat_research completed via callback' : 'chat_research LLM failed',
+        meta: { job_id: job.id, task_id: taskId },
+        error: done.error,
+      })
+      return {
+        ok: true,
+        detail: done.ok ? 'chat_research completed' : `chat_research llm: ${done.error}`,
       }
     }
 

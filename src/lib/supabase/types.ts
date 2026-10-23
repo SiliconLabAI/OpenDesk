@@ -4,6 +4,7 @@ export type JobKind =
   | 'coverage_scan'
   | 'press_clip'
   | 'coverage_reel'
+  | 'chat_research'
 
 export type JobStatus =
   | 'queued'

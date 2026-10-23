@@ -7,6 +7,7 @@ import {
 } from '~/lib/profile'
 import { loadSettings } from '~/lib/settings/client'
 import { runChat } from '~/lib/chat/run'
+import { pollChatResearch } from '~/lib/chat/researchJob'
 import {
   deleteThread,
   loadThreads,
@@ -126,21 +127,114 @@ function ChatPage() {
         },
       })
 
-      const assistant: ChatMessage = {
-        id: newUuid(),
-        role: 'assistant',
-        content:
-          res && res.ok
-            ? res.content || ''
-            : `**Error:** ${(res && res.error) || 'Chat failed (empty server response)'}`,
-        skillSlug: skillSlug || withUser.skillSlug,
-        createdAt: new Date().toISOString(),
+      if (!res) {
+        throw new Error('Chat failed (empty server response)')
       }
-      await persist({
-        ...withUser,
-        messages: [...withUser.messages, assistant],
-        updatedAt: new Date().toISOString(),
-      })
+
+      // Manus async research: show pending, then poll until callback/poll completes
+      if (res.ok && res.pending && res.jobId) {
+        const pendingMsg: ChatMessage = {
+          id: newUuid(),
+          role: 'assistant',
+          content: res.content || '## Researching with Manus…',
+          skillSlug: skillSlug || withUser.skillSlug,
+          createdAt: new Date().toISOString(),
+        }
+        let thread = {
+          ...withUser,
+          messages: [...withUser.messages, pendingMsg],
+          updatedAt: new Date().toISOString(),
+        }
+        await persist(thread)
+
+        const jobId = res.jobId
+        const maxAttempts = 60 // ~3 min at 3s
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise((r) => setTimeout(r, 3000))
+          const poll = await pollChatResearch({ data: { jobId } })
+          if (poll.status === 'completed' && poll.content) {
+            const finalMsg: ChatMessage = {
+              id: newUuid(),
+              role: 'assistant',
+              content: poll.content,
+              skillSlug: skillSlug || withUser.skillSlug,
+              createdAt: new Date().toISOString(),
+            }
+            // Replace pending placeholder with final answer
+            thread = {
+              ...thread,
+              messages: [
+                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+                finalMsg,
+              ],
+              updatedAt: new Date().toISOString(),
+            }
+            await persist(thread)
+            break
+          }
+          if (poll.status === 'failed') {
+            const errMsg: ChatMessage = {
+              id: newUuid(),
+              role: 'assistant',
+              content: `**Research failed:** ${poll.error || 'unknown'}`,
+              createdAt: new Date().toISOString(),
+            }
+            thread = {
+              ...thread,
+              messages: [
+                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+                errMsg,
+              ],
+              updatedAt: new Date().toISOString(),
+            }
+            await persist(thread)
+            break
+          }
+          // still waiting — keep shimmer / pending message
+          if (i === maxAttempts - 1) {
+            const timeoutMsg: ChatMessage = {
+              id: newUuid(),
+              role: 'assistant',
+              content: [
+                '## Still waiting on Manus',
+                '',
+                poll.content || 'Timed out polling for results.',
+                res.manusTaskUrl
+                  ? `Open task: ${res.manusTaskUrl}`
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('\n'),
+              createdAt: new Date().toISOString(),
+            }
+            thread = {
+              ...thread,
+              messages: [
+                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+                timeoutMsg,
+              ],
+              updatedAt: new Date().toISOString(),
+            }
+            await persist(thread)
+          }
+        }
+      } else {
+        const assistant: ChatMessage = {
+          id: newUuid(),
+          role: 'assistant',
+          content:
+            res.ok
+              ? res.content || ''
+              : `**Error:** ${res.error || 'Chat failed'}`,
+          skillSlug: skillSlug || withUser.skillSlug,
+          createdAt: new Date().toISOString(),
+        }
+        await persist({
+          ...withUser,
+          messages: [...withUser.messages, assistant],
+          updatedAt: new Date().toISOString(),
+        })
+      }
     } catch (err) {
       const assistant: ChatMessage = {
         id: newUuid(),
