@@ -7,9 +7,7 @@ import {
 } from '~/lib/medialyst/client'
 import {
   hasManusConfig,
-  manusCreateTask,
-  manusListMessages,
-  extractManusResults,
+  manusRunAndWait,
 } from '~/lib/manus/client'
 import { getSkill } from './catalog'
 
@@ -24,27 +22,21 @@ export async function manusResearchPrompt(
     return ''
   }
   try {
-    const task = await manusCreateTask(
+    // Pure agent task — no Playwright / connectors required
+    const result = await manusRunAndWait(
       {
         title: `newsjack research: ${prompt.slice(0, 40)}`,
         prompt,
         agentProfile: 'lite',
+        timeoutMs: 50_000,
+        intervalMs: 4_000,
       },
       { apiKey: settings.manusApiKey || undefined },
     )
-    await new Promise((r) => setTimeout(r, 12000))
-    try {
-      const msgs = await manusListMessages(task.task_id, 12, {
-        apiKey: settings.manusApiKey || undefined,
-      })
-      const extracted = extractManusResults(msgs)
-      if (extracted.text) {
-        return `### Manus live research (task ${task.task_id})\n${extracted.text}`
-      }
-    } catch {
-      /* still running */
+    if (result.text) {
+      return `### Manus live research (task ${result.taskId})\n${result.text}`
     }
-    return `### Manus research started\nTask \`${task.task_id}\`${task.task_url ? ` — ${task.task_url}` : ''}. Results may still be streaming; prefer this task over inventing coverage.`
+    return `### Manus research started\nTask \`${result.taskId}\`${result.taskUrl ? ` — ${result.taskUrl}` : ''}. Still running — do not invent coverage; you may summarize that research is in progress.`
   } catch (e) {
     return `### Manus research failed\n${e instanceof Error ? e.message : String(e)}`
   }
