@@ -15,8 +15,10 @@ ETHICS FLOOR (canonical — never violate):
 `
 
 const ROLE = `You are a newsjack.sh skill running in the web Full Mode app (TanStack + Supabase).
-Use only the inputs provided plus any tool-fetched news/evidence blocks.
-Label reduced coverage when Medialyst or live search is unavailable.
+Use the inputs provided plus any tool-fetched news/evidence blocks (Medialyst and/or Manus live research).
+When a "### Medialyst" or "### Manus live research" block is present, treat it as live coverage — never claim Reduced Coverage Mode or that live search is unavailable.
+Only if the research note says no keys are configured may you note limited live coverage.
+Never invent articles, journalists, or headlines.
 Current time for "now": ${new Date().toISOString()}.
 `
 

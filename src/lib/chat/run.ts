@@ -5,6 +5,10 @@ import { resolveSettings } from '~/lib/settings/resolve'
 import { getSkill } from '~/lib/skills/catalog'
 import { doctrineFor } from '~/lib/skills/doctrine'
 import { enrichSkillInputs } from '~/lib/auto/research'
+import {
+  fetchToolContext,
+  researchCoverageNote,
+} from '~/lib/skills/toolContext'
 
 const SettingsPartial = z
   .object({
@@ -46,11 +50,16 @@ export const runChat = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => {
     const settings = resolveSettings(data.settings)
     const skill = data.skillSlug ? getSkill(data.skillSlug) : undefined
+    const lastUser =
+      [...data.messages].reverse().find((m) => m.role === 'user')?.content ||
+      ''
 
     let skillContext = ''
+    let liveResearch = ''
+    let coverageNote = ''
+
     if (skill) {
       let values = data.skillValues || {}
-      // Prefill empty skill fields from profile for chat context
       const empty = Object.fromEntries(
         skill.inputs.map((i) => [i.id, values[i.id] || '']),
       )
@@ -68,6 +77,24 @@ export const runChat = createServerFn({ method: 'POST' })
         values = empty
       }
 
+      // Prefer user message as query seed when form fields sparse
+      if (!Object.values(values).some((v) => v?.trim()) && lastUser) {
+        const firstId = skill.inputs[0]?.id
+        if (firstId) values = { ...values, [firstId]: lastUser }
+      }
+
+      try {
+        liveResearch =
+          (await fetchToolContext(skill.slug, values, settings, {
+            userMessage: lastUser,
+            profile: data.profile,
+          })) || ''
+      } catch (e) {
+        liveResearch = `### Live research error\n${e instanceof Error ? e.message : String(e)}`
+      }
+
+      coverageNote = researchCoverageNote(liveResearch || undefined, settings)
+
       const filled = skill.inputs
         .map((i) => {
           const v = values[i.id]?.trim()
@@ -81,8 +108,33 @@ export const runChat = createServerFn({ method: 'POST' })
 ${doctrineFor(skill.slug)}
 
 ### Skill form context
-${filled || '(no form fields filled — use profile + user message)'}
+${filled || '(inferred from profile + latest user message)'}
+
+${liveResearch ? `### Live tool research\n${liveResearch}` : ''}
+
+### Coverage instruction
+${coverageNote}
 `
+    } else if (lastUser) {
+      // No skill pill — still try Manus if message looks like news research
+      const looksLikeNews =
+        /\b(news|coverage|headline|journalist|pitch|monitor|trend|today|this week)\b/i.test(
+          lastUser,
+        )
+      if (looksLikeNews) {
+        try {
+          liveResearch =
+            (await fetchToolContext(
+              'news-search',
+              { query: lastUser.slice(0, 400) },
+              settings,
+              { userMessage: lastUser, profile: data.profile },
+            )) || ''
+        } catch {
+          liveResearch = ''
+        }
+        coverageNote = researchCoverageNote(liveResearch || undefined, settings)
+      }
     }
 
     const system = `You are Newsjack Web, a PR agent chat.
@@ -92,10 +144,15 @@ Always use the client profile as ground truth.
 ## Client profile
 ${data.profile}
 ${skillContext}
+${
+  liveResearch && !skill
+    ? `\n## Live tool research\n${liveResearch}\n\n### Coverage instruction\n${coverageNote}\n`
+    : ''
+}
 
-Respond in clear markdown. If the user asks to run a skill workflow, produce the skill's expected deliverable. If information is missing, ask concise questions.`
+When live research blocks (Medialyst or Manus) are present above, use them as evidence. Do NOT claim "Reduced Coverage Mode" or that live web search is unavailable in that case.
+Respond in clear markdown.`
 
-    // Flatten history for single-turn providers that only take system+user
     const history = data.messages
       .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
       .join('\n\n')
@@ -103,7 +160,12 @@ Respond in clear markdown. If the user asks to run a skill workflow, produce the
 
     try {
       const { text, provider } = await callLlm(settings, system, user)
-      return { ok: true as const, content: text, provider }
+      return {
+        ok: true as const,
+        content: text,
+        provider,
+        usedLiveResearch: Boolean(liveResearch),
+      }
     } catch (e) {
       return {
         ok: false as const,
