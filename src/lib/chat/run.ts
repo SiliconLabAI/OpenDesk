@@ -49,6 +49,11 @@ export const runChat = createServerFn({ method: 'POST' })
     }),
   )
   .handler(async ({ data }) => {
+    const isTrivialUserMessage = (s: string) => {
+      const t = s.trim().toLowerCase()
+      if (t.length < 8) return true
+      return /^(hi|hello|hey|yo|test|ok|thanks|thank you)[.!?]*$/i.test(t)
+    }
     const settings = resolveSettings(data.settings)
     const skill = data.skillSlug ? getSkill(data.skillSlug) : undefined
     const lastUser =
@@ -122,7 +127,7 @@ ${coverageNote}
         /\b(news|coverage|headline|journalist|pitch|monitor|trend|today|this week)\b/i.test(
           lastUser,
         )
-      if (looksLikeNews) {
+      if (looksLikeNews && !isTrivialUserMessage(lastUser)) {
         try {
           liveResearch =
             (await fetchToolContext(

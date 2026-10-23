@@ -85,7 +85,7 @@ export async function manusCreateTask(
     message,
     agent_profile: opts.agentProfile ?? 'standard',
     interactive_mode: false,
-    hide_in_task_list: opts.hideInTaskList ?? true,
+    hide_in_task_list: opts.hideInTaskList ?? false,
   }
   // Start without connectors so Playwright/etc. is never required
   if (clearConnectors && !hasConnectors) {
@@ -174,69 +174,107 @@ export async function manusGetTask(taskId: string, ctx?: ManusCtx) {
   return data
 }
 
-/** Extract assistant text (+ optional file urls) from listMessages response */
+/** Extract assistant text from task.listMessages (Manus v2 event shape). */
 export function extractManusResults(listMessagesResponse: unknown): {
   text: string
   fileUrls: string[]
+  statusHints: string[]
+  rawTypes: string[]
 } {
   const data = listMessagesResponse as {
-    messages?: Array<{
-      role?: string
-      content?: unknown
-      parts?: unknown
-    }>
+    messages?: Array<Record<string, unknown>>
+    data?: Array<Record<string, unknown>>
   }
-  const messages = data.messages || []
+  const messages = data.messages || data.data || []
   const texts: string[] = []
   const fileUrls: string[] = []
+  const statusHints: string[] = []
+  const rawTypes: string[] = []
 
-  const walk = (node: unknown) => {
-    if (node == null) return
-    if (typeof node === 'string') {
-      texts.push(node)
-      return
-    }
-    if (Array.isArray(node)) {
-      node.forEach(walk)
-      return
-    }
-    if (typeof node === 'object') {
-      const o = node as Record<string, unknown>
-      if (typeof o.text === 'string') texts.push(o.text)
-      if (typeof o.content === 'string') texts.push(o.content)
-      if (typeof o.url === 'string' && /^https?:/i.test(o.url)) {
-        fileUrls.push(o.url)
-      }
-      if (typeof o.file_url === 'string') fileUrls.push(o.file_url as string)
-      for (const v of Object.values(o)) {
-        if (v && typeof v === 'object') walk(v)
+  const pushAttachments = (atts: unknown) => {
+    if (!Array.isArray(atts)) return
+    for (const a of atts) {
+      if (a && typeof a === 'object') {
+        const u = (a as { url?: string }).url
+        if (u) fileUrls.push(u)
       }
     }
   }
 
   for (const m of messages) {
-    const role = (m.role || '').toLowerCase()
-    if (role === 'user' || role === 'human') continue
-    walk(m.content)
-    walk(m.parts)
+    const type = String(m.type || m.role || '')
+    rawTypes.push(type)
+
+    // Manus v2: type === "assistant_message"
+    if (type === 'assistant_message' || m.assistant_message) {
+      const am = (m.assistant_message || m) as {
+        content?: string | unknown
+        attachments?: unknown
+      }
+      if (typeof am.content === 'string' && am.content.trim()) {
+        texts.push(am.content.trim())
+      } else if (Array.isArray(am.content)) {
+        for (const part of am.content) {
+          if (typeof part === 'string') texts.push(part)
+          else if (part && typeof part === 'object' && typeof (part as { text?: string }).text === 'string') {
+            texts.push((part as { text: string }).text)
+          }
+        }
+      }
+      pushAttachments(am.attachments)
+    }
+
+    if (type === 'structured_output_result' && m.structured_output_result) {
+      const so = m.structured_output_result as { success?: boolean; value?: unknown }
+      if (so.value != null) {
+        texts.push(
+          typeof so.value === 'string'
+            ? so.value
+            : '```json' + JSON.stringify(so.value, null, 2) + '```',
+        )
+      }
+    }
+
+    if (type === 'status_update' || m.status_update) {
+      const su = (m.status_update || {}) as {
+        agent_status?: string
+        brief?: string
+        description?: string
+      }
+      const hint = [su.agent_status, su.brief, su.description].filter(Boolean).join(' — ')
+      if (hint) statusHints.push(hint)
+    }
+
+    if (type === 'error_message' || m.error_message) {
+      const em = (m.error_message || {}) as { content?: string; error_type?: string }
+      if (em.content) statusHints.push(`error: ${em.content}`)
+    }
+
+    // Fallback legacy shapes
+    if (typeof m.content === 'string' && type !== 'user_message') {
+      texts.push(m.content)
+    }
   }
 
   return {
-    text: texts.filter(Boolean).join('\n\n').trim(),
+    text: texts.filter(Boolean).join('').trim(),
     fileUrls: [...new Set(fileUrls)],
+    statusHints,
+    rawTypes,
   }
 }
 
+
 /**
- * Create task and poll until assistant text appears or timeout.
- * Prefer webhooks for long jobs; this is for chat/skill sync research.
+ * Create task and poll until assistant_message appears or timeout.
+ * Tasks are visible in Manus UI (hide_in_task_list: false).
  */
 export async function manusRunAndWait(
   opts: {
     prompt: string
     title?: string
     agentProfile?: 'standard' | 'lite' | 'max'
-    /** total wait ms (default 45s) */
+    /** total wait ms (default 120s) */
     timeoutMs?: number
     /** poll interval ms */
     intervalMs?: number
@@ -248,6 +286,7 @@ export async function manusRunAndWait(
   text: string
   fileUrls: string[]
   timedOut: boolean
+  statusHints: string[]
 }> {
   const task = await manusCreateTask(
     {
@@ -255,29 +294,59 @@ export async function manusRunAndWait(
       title: opts.title,
       agentProfile: opts.agentProfile ?? 'lite',
       clearConnectors: true,
+      hideInTaskList: false,
     },
     ctx,
   )
 
-  const timeoutMs = opts.timeoutMs ?? 45_000
-  const intervalMs = opts.intervalMs ?? 4_000
+  const timeoutMs = opts.timeoutMs ?? 120_000
+  const intervalMs = opts.intervalMs ?? 3_000
   const started = Date.now()
   let text = ''
   let fileUrls: string[] = []
+  let statusHints: string[] = []
+  let lastTypes: string[] = []
+
+  // Initial short delay before first poll
+  await new Promise((r) => setTimeout(r, 2000))
 
   while (Date.now() - started < timeoutMs) {
-    await new Promise((r) => setTimeout(r, intervalMs))
     try {
-      const msgs = await manusListMessages(task.task_id, 20, ctx)
+      const msgs = await manusListMessages(task.task_id, 50, ctx)
       const extracted = extractManusResults(msgs)
-      if (extracted.text && extracted.text.length > 40) {
+      lastTypes = extracted.rawTypes
+      if (extracted.statusHints.length) statusHints = extracted.statusHints
+      if (extracted.text && extracted.text.length > 20) {
         text = extracted.text
         fileUrls = extracted.fileUrls
         break
       }
-    } catch {
-      /* keep polling */
+      // Also check task.detail status if available
+      try {
+        const detail = await manusGetTask(task.task_id, ctx)
+        const status =
+          (detail as { status?: string; task?: { status?: string } }).status ||
+          (detail as { task?: { status?: string } }).task?.status ||
+          (detail as { data?: { status?: string } }).data?.status
+        if (status === 'stopped' || status === 'completed' || status === 'error') {
+          // one more message pull
+          const msgs2 = await manusListMessages(task.task_id, 50, ctx)
+          const ex2 = extractManusResults(msgs2)
+          if (ex2.text) {
+            text = ex2.text
+            fileUrls = ex2.fileUrls
+          }
+          break
+        }
+      } catch {
+        /* detail optional */
+      }
+    } catch (e) {
+      statusHints.push(
+        `poll error: ${e instanceof Error ? e.message : String(e)}`,
+      )
     }
+    await new Promise((r) => setTimeout(r, intervalMs))
   }
 
   await writeAppLog({
@@ -291,16 +360,21 @@ export async function manusRunAndWait(
       task_url: task.task_url,
       text_preview: text.slice(0, 600),
       timed_out: !text,
+      status_hints: statusHints.slice(-5),
+      message_types_seen: lastTypes.slice(0, 30),
     },
   })
+
   return {
     taskId: task.task_id,
     taskUrl: task.task_url,
     text,
     fileUrls,
     timedOut: !text,
+    statusHints,
   }
 }
+
 
 export async function manusRegisterWebhook(
   url: string,

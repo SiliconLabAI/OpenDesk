@@ -28,15 +28,18 @@ export async function manusResearchPrompt(
         title: `newsjack research: ${prompt.slice(0, 40)}`,
         prompt,
         agentProfile: 'lite',
-        timeoutMs: 50_000,
-        intervalMs: 4_000,
+        timeoutMs: 120_000,
+        intervalMs: 3_000,
       },
       { apiKey: settings.manusApiKey || undefined },
     )
     if (result.text) {
-      return `### Manus live research (task ${result.taskId})\n${result.text}`
+      const link = result.taskUrl ? ` — ${result.taskUrl}` : ''
+      return `### Manus live research (task ${result.taskId}${link})\n${result.text}`
     }
-    return `### Manus research started\nTask \`${result.taskId}\`${result.taskUrl ? ` — ${result.taskUrl}` : ''}. Still running — do not invent coverage; you may summarize that research is in progress.`
+    const link = result.taskUrl ? ` — open: ${result.taskUrl}` : ''
+    const hints = (result as { statusHints?: string[] }).statusHints?.join('; ') || 'no status'
+    return `### Manus research pending\nTask \`${result.taskId}\`${link}.\nWait timed out (${hints}). Do not invent coverage; user can open the Manus link.`
   } catch (e) {
     return `### Manus research failed\n${e instanceof Error ? e.message : String(e)}`
   }
