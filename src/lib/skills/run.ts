@@ -5,6 +5,7 @@ import { buildSystemPrompt, buildUserPrompt, offlineDemoResult } from './prompts
 import { callLlm } from '~/lib/llm/client'
 import { resolveSettings } from '~/lib/settings/resolve'
 import { fetchToolContext } from './toolContext'
+import { writeAppLog } from '~/lib/logs/write'
 
 const SettingsPartial = z
   .object({
@@ -56,7 +57,25 @@ export const runSkill = createServerFn({ method: 'POST' })
     const user = buildUserPrompt(skill, data.values, data.profile, extra)
 
     try {
+      await writeAppLog({
+        level: 'info',
+        kind: 'skill',
+        source: 'runSkill',
+        message: `/${skill.slug}`,
+        request: {
+          slug: skill.slug,
+          value_keys: Object.keys(data.values),
+          extra_len: extra?.length || 0,
+        },
+      })
       const { text, provider } = await callLlm(settings, system, user)
+      await writeAppLog({
+        level: 'info',
+        kind: 'skill',
+        source: 'runSkill',
+        message: `/${skill.slug} via ${provider}`,
+        response: { text_preview: text.slice(0, 600) },
+      })
       return {
         ok: true as const,
         provider,
@@ -66,6 +85,13 @@ export const runSkill = createServerFn({ method: 'POST' })
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      await writeAppLog({
+        level: 'error',
+        kind: 'skill',
+        source: 'runSkill',
+        message: `/${skill.slug} failed`,
+        error: msg,
+      })
       return {
         ok: false as const,
         error: msg,

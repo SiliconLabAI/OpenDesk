@@ -69,6 +69,16 @@ export function Layout({ children }: { children: ReactNode }) {
               Profile
             </Link>
             <Link
+              to="/logs"
+              className="px-3 py-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]"
+              activeProps={{
+                className:
+                  'px-3 py-1.5 rounded-md bg-[var(--surface-2)] text-[var(--text)]',
+              }}
+            >
+              Logs
+            </Link>
+            <Link
               to="/settings"
               className="px-3 py-1.5 rounded-md text-[var(--muted)] hover:text-[var(--text)] hover:bg-[var(--surface-2)]"
               activeProps={{

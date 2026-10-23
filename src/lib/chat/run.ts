@@ -9,6 +9,7 @@ import {
   fetchToolContext,
   researchCoverageNote,
 } from '~/lib/skills/toolContext'
+import { writeAppLog } from '~/lib/logs/write'
 
 const SettingsPartial = z
   .object({
@@ -159,7 +160,27 @@ Respond in clear markdown.`
     const user = `Conversation so far:\n\n${history}\n\nRespond as the assistant to the latest user message.`
 
     try {
+      await writeAppLog({
+        level: 'info',
+        kind: 'chat',
+        source: 'runChat',
+        message: skill ? `skill /${skill.slug}` : 'free chat',
+        request: {
+          skill: skill?.slug,
+          message_count: data.messages.length,
+          last_user: lastUser.slice(0, 400),
+          live_research_len: liveResearch.length,
+        },
+      })
       const { text, provider } = await callLlm(settings, system, user)
+      await writeAppLog({
+        level: 'info',
+        kind: 'chat',
+        source: 'runChat',
+        message: `reply via ${provider}`,
+        response: { provider, text_preview: text.slice(0, 600) },
+        meta: { usedLiveResearch: Boolean(liveResearch) },
+      })
       return {
         ok: true as const,
         content: text,
@@ -167,9 +188,18 @@ Respond in clear markdown.`
         usedLiveResearch: Boolean(liveResearch),
       }
     } catch (e) {
+      const err = e instanceof Error ? e.message : String(e)
+      await writeAppLog({
+        level: 'error',
+        kind: 'chat',
+        source: 'runChat',
+        message: 'runChat failed',
+        error: err,
+        request: { skill: skill?.slug, last_user: lastUser.slice(0, 300) },
+      })
       return {
         ok: false as const,
-        error: e instanceof Error ? e.message : String(e),
+        error: err,
         content: '',
       }
     }

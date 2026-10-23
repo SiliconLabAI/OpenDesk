@@ -176,7 +176,7 @@ function ToolPage() {
               manusApiKey: settings.manusApiKey || undefined,
             },
           })
-          if (!res.ok) setError(res.error || 'Job failed')
+          if (!res || !res.ok) setError((res && res.error) || 'Job failed')
           else {
             setOutput(
               [
@@ -201,7 +201,7 @@ function ToolPage() {
               manusApiKey: settings.manusApiKey || undefined,
             },
           })
-          if (!res.ok) setError(res.error || 'Job failed')
+          if (!res || !res.ok) setError((res && res.error) || 'Job failed')
           else {
             setOutput(
               [
@@ -226,9 +226,9 @@ function ToolPage() {
             settings,
           },
         })
-        if (!res.ok) setError(res.error || 'Run failed')
-        setOutput(res.output || '')
-        setProvider(res.provider || '')
+        if (!res || !res.ok) setError((res && res.error) || 'Run failed')
+        setOutput((res && res.output) || '')
+        setProvider((res && res.provider) || '')
         // Persist form values to Supabase after every run
         const draftRes = await saveSkillDraft({
           data: {

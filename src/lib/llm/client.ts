@@ -1,4 +1,5 @@
 import type { ProviderSettings } from '~/lib/settings/types'
+import { writeAppLog } from '~/lib/logs/write'
 
 export type LlmCallResult = {
   text: string
@@ -30,26 +31,91 @@ export async function callChatCompletions(opts: {
     headers.Authorization = `Bearer ${opts.apiKey}`
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: opts.model,
-      temperature: opts.temperature ?? 0.4,
-      messages: [
-        { role: 'system', content: opts.system },
-        { role: 'user', content: opts.user },
-      ],
-    }),
-  })
-  if (!res.ok) {
-    const t = await res.text()
-    throw new Error(`LLM ${res.status}: ${t.slice(0, 300)}`)
+  const body = {
+    model: opts.model,
+    temperature: opts.temperature ?? 0.4,
+    messages: [
+      { role: 'system', content: opts.system },
+      { role: 'user', content: opts.user },
+    ],
   }
-  const data = (await res.json()) as {
+
+  const started = Date.now()
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+  } catch (e) {
+    await writeAppLog({
+      level: 'error',
+      kind: 'llm',
+      source: 'openai_compatible',
+      message: `fetch failed ${url}`,
+      request: {
+        url,
+        model: opts.model,
+        system_len: opts.system.length,
+        user_len: opts.user.length,
+      },
+      error: e instanceof Error ? e.message : String(e),
+      durationMs: Date.now() - started,
+    })
+    throw e
+  }
+
+  const raw = await res.text()
+  let data: {
     choices?: Array<{ message?: { content?: string } }>
+    error?: { message?: string }
+  } = {}
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    data = {}
   }
-  return data.choices?.[0]?.message?.content?.trim() || 'Empty model response.'
+
+  if (!res.ok) {
+    const errMsg =
+      data.error?.message || raw.slice(0, 500) || `HTTP ${res.status}`
+    await writeAppLog({
+      level: 'error',
+      kind: 'llm',
+      source: 'openai_compatible',
+      message: `chat/completions ${res.status}`,
+      request: {
+        url,
+        model: opts.model,
+        system_preview: opts.system.slice(0, 400),
+        user_preview: opts.user.slice(0, 400),
+      },
+      response: { status: res.status, body: raw.slice(0, 2000) },
+      error: errMsg,
+      durationMs: Date.now() - started,
+    })
+    throw new Error(errMsg)
+  }
+
+  const text = data.choices?.[0]?.message?.content || ''
+  await writeAppLog({
+    level: 'info',
+    kind: 'llm',
+    source: 'openai_compatible',
+    message: `ok model=${opts.model}`,
+    request: {
+      url,
+      model: opts.model,
+      system_len: opts.system.length,
+      user_len: opts.user.length,
+      system_preview: opts.system.slice(0, 300),
+      user_preview: opts.user.slice(0, 300),
+    },
+    response: { text_len: text.length, text_preview: text.slice(0, 800) },
+    durationMs: Date.now() - started,
+  })
+  return text
 }
 
 export async function callAnthropic(opts: {
@@ -58,34 +124,67 @@ export async function callAnthropic(opts: {
   system: string
   user: string
 }): Promise<string> {
+  const started = Date.now()
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
+      'Content-Type': 'application/json',
       'x-api-key': opts.apiKey,
       'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: opts.model,
+      model: opts.model || 'claude-sonnet-4-20250514',
       max_tokens: 4096,
       system: opts.system,
       messages: [{ role: 'user', content: opts.user }],
     }),
   })
+  const raw = await res.text()
+  let data: {
+    content?: Array<{ type?: string; text?: string }>
+    error?: { message?: string }
+  } = {}
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    data = {}
+  }
   if (!res.ok) {
-    const t = await res.text()
-    throw new Error(`Anthropic ${res.status}: ${t.slice(0, 300)}`)
+    const errMsg =
+      data.error?.message || raw.slice(0, 500) || `HTTP ${res.status}`
+    await writeAppLog({
+      level: 'error',
+      kind: 'llm',
+      source: 'anthropic',
+      message: `messages ${res.status}`,
+      request: {
+        model: opts.model,
+        system_preview: opts.system.slice(0, 300),
+        user_preview: opts.user.slice(0, 300),
+      },
+      response: { status: res.status, body: raw.slice(0, 2000) },
+      error: errMsg,
+      durationMs: Date.now() - started,
+    })
+    throw new Error(errMsg)
   }
-  const data = (await res.json()) as {
-    content?: Array<{ type: string; text?: string }>
-  }
-  return (
-    data.content
-      ?.filter((c) => c.type === 'text')
-      .map((c) => c.text)
-      .join('\n')
-      .trim() || 'Empty model response.'
-  )
+  const text =
+    data.content?.filter((c) => c.type === 'text').map((c) => c.text).join('') ||
+    ''
+  await writeAppLog({
+    level: 'info',
+    kind: 'llm',
+    source: 'anthropic',
+    message: `ok model=${opts.model}`,
+    request: {
+      model: opts.model,
+      system_len: opts.system.length,
+      user_len: opts.user.length,
+    },
+    response: { text_len: text.length, text_preview: text.slice(0, 800) },
+    durationMs: Date.now() - started,
+  })
+  return text
 }
 
 /**
@@ -142,36 +241,48 @@ export async function callLlm(
     return { text, provider: 'openai' as const }
   }
 
-  if (pref === 'openai_compatible') return tryCompatible()
-  if (pref === 'anthropic') return tryAnthropic()
-  if (pref === 'openai') return tryOpenai()
+  try {
+    if (pref === 'openai_compatible') return await tryCompatible()
+    if (pref === 'anthropic') return await tryAnthropic()
+    if (pref === 'openai') return await tryOpenai()
 
-  // auto
-  const errors: string[] = []
-  if (settings.openaiCompatibleEnabled && settings.openaiCompatibleBaseUrl) {
-    try {
-      return await tryCompatible()
-    } catch (e) {
-      errors.push(e instanceof Error ? e.message : String(e))
+    // auto
+    const errors: string[] = []
+    if (settings.openaiCompatibleEnabled && settings.openaiCompatibleBaseUrl) {
+      try {
+        return await tryCompatible()
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : String(e))
+      }
     }
-  }
-  if (settings.anthropicApiKey) {
-    try {
-      return await tryAnthropic()
-    } catch (e) {
-      errors.push(e instanceof Error ? e.message : String(e))
+    if (settings.anthropicApiKey) {
+      try {
+        return await tryAnthropic()
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : String(e))
+      }
     }
-  }
-  if (settings.openaiApiKey) {
-    try {
-      return await tryOpenai()
-    } catch (e) {
-      errors.push(e instanceof Error ? e.message : String(e))
+    if (settings.openaiApiKey) {
+      try {
+        return await tryOpenai()
+      } catch (e) {
+        errors.push(e instanceof Error ? e.message : String(e))
+      }
     }
+    throw new Error(
+      errors.length
+        ? `No LLM succeeded: ${errors.join('; ')}`
+        : 'No LLM API keys configured. Open Settings to add Anthropic, OpenAI, or an OpenAI-compatible endpoint.',
+    )
+  } catch (e) {
+    await writeAppLog({
+      level: 'error',
+      kind: 'llm',
+      source: 'router',
+      message: 'callLlm failed',
+      meta: { preferred: pref },
+      error: e instanceof Error ? e.message : String(e),
+    })
+    throw e
   }
-  throw new Error(
-    errors.length
-      ? `No LLM succeeded: ${errors.join('; ')}`
-      : 'No LLM API keys configured. Open Settings to add Anthropic, OpenAI, or an OpenAI-compatible endpoint.',
-  )
 }

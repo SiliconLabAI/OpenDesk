@@ -129,9 +129,10 @@ function ChatPage() {
       const assistant: ChatMessage = {
         id: newUuid(),
         role: 'assistant',
-        content: res.ok
-          ? res.content
-          : `**Error:** ${res.error || 'Chat failed'}`,
+        content:
+          res && res.ok
+            ? res.content || ''
+            : `**Error:** ${(res && res.error) || 'Chat failed (empty server response)'}`,
         skillSlug: skillSlug || withUser.skillSlug,
         createdAt: new Date().toISOString(),
       }

@@ -4,6 +4,8 @@
  * Optional connectors can be passed explicitly for browser jobs if the user has them.
  */
 
+import { writeAppLog } from '~/lib/logs/write'
+
 const BASE = 'https://api.manus.ai'
 
 /** @deprecated Playwright is optional — only pass when user has it installed */
@@ -102,12 +104,37 @@ export async function manusCreateTask(
     },
     body: JSON.stringify(body),
   })
-  const data = (await res.json()) as ManusCreateTaskResult
+  const data = (await res.json().catch(() => ({}))) as ManusCreateTaskResult
   if (!res.ok || data.ok === false) {
-    throw new Error(
-      data.error?.message || `Manus task.create failed (${res.status})`,
-    )
+    const errMsg =
+      data.error?.message || `Manus task.create failed (${res.status})`
+    await writeAppLog({
+      level: 'error',
+      kind: 'manus',
+      source: 'task.create',
+      message: errMsg,
+      request: { title: opts.title, has_connectors: hasConnectors, clear_connectors: clearConnectors },
+      response: data as unknown as Record<string, unknown>,
+      error: errMsg,
+    })
+    throw new Error(errMsg)
   }
+  await writeAppLog({
+    level: 'info',
+    kind: 'manus',
+    source: 'task.create',
+    message: `task ${data.task_id}`,
+    request: {
+      title: opts.title,
+      prompt_preview: opts.prompt.slice(0, 400),
+      agent_profile: opts.agentProfile ?? 'standard',
+      clear_connectors: clearConnectors,
+    },
+    response: {
+      task_id: data.task_id,
+      task_url: data.task_url,
+    },
+  })
   return data
 }
 
@@ -253,6 +280,19 @@ export async function manusRunAndWait(
     }
   }
 
+  await writeAppLog({
+    level: text ? 'info' : 'warn',
+    kind: 'manus',
+    source: 'runAndWait',
+    message: text ? `got ${text.length} chars` : 'timed out / empty',
+    request: { title: opts.title, timeoutMs },
+    response: {
+      task_id: task.task_id,
+      task_url: task.task_url,
+      text_preview: text.slice(0, 600),
+      timed_out: !text,
+    },
+  })
   return {
     taskId: task.task_id,
     taskUrl: task.task_url,
