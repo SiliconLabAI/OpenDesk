@@ -315,11 +315,15 @@ function ChatPage() {
             content: [
               '## Researching with Manus…',
               '',
-              `Task: `${res.manusTaskId || ''}\`${res.manusTaskUrl ? ` — [open in Manus](${res.manusTaskUrl})` : ''}`,
+              'Task: `' +
+                (res.manusTaskId || '') +
+                '`' +
+                (res.manusTaskUrl
+                  ? ' — [open in Manus](' + res.manusTaskUrl + ')'
+                  : ''),
               '',
               'Still waiting. Keep this tab open, or refresh later — the job will resume automatically.',
-            ].join('
-'),
+            ].join('\n'),
             pending: true,
             jobId: res.jobId,
           }
