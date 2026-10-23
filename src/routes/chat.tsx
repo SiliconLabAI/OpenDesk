@@ -18,10 +18,44 @@ import {
   type ChatThread,
 } from '~/lib/chat/history'
 import { Markdown } from '~/components/Markdown'
+import { loadSkillDraft } from '~/lib/skills/drafts'
 
 export const Route = createFileRoute('/chat')({
   component: ChatPage,
 })
+
+
+/** Poll a Manus research job until complete; returns final assistant content or null if still pending */
+async function waitForResearchJob(
+  jobId: string,
+  opts?: { maxAttempts?: number; intervalMs?: number },
+): Promise<{ status: string; content?: string; error?: string; manusTaskUrl?: string }> {
+  const maxAttempts = opts?.maxAttempts ?? 90
+  const intervalMs = opts?.intervalMs ?? 3000
+  let last: { status: string; content?: string; error?: string; manusTaskUrl?: string } = {
+    status: 'waiting_manus',
+  }
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const poll = await pollChatResearch({ data: { jobId } })
+      last = {
+        status: poll.status || 'waiting_manus',
+        content: poll.content,
+        error: (poll as { error?: string }).error,
+        manusTaskUrl: poll.manusTaskUrl,
+      }
+      if (poll.status === 'completed') return last
+      if (poll.status === 'failed') return last
+    } catch (e) {
+      last = {
+        status: 'waiting_manus',
+        error: e instanceof Error ? e.message : String(e),
+      }
+    }
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  return last
+}
 
 function profileReady(): boolean {
   const p = loadProfile()
@@ -45,6 +79,78 @@ function ChatPage() {
       setThreads(list)
       if (list[0]) setActiveId(list[0].id)
     })()
+  }, [])
+
+  // Resume any pending Manus research jobs after load/refresh
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const list = await loadThreads()
+      for (const th of list) {
+        const pending = th.messages.filter((m) => m.pending && m.jobId)
+        for (const msg of pending) {
+          if (cancelled || !msg.jobId) continue
+          setBusy(true)
+          try {
+            const result = await waitForResearchJob(msg.jobId, {
+              maxAttempts: 60,
+              intervalMs: 3000,
+            })
+            if (cancelled) return
+            if (result.status === 'completed') {
+              const finalMsg: ChatMessage = {
+                id: newUuid(),
+                role: 'assistant',
+                content: result.content || 'Research completed (empty output).',
+                skillSlug: msg.skillSlug || th.skillSlug,
+                createdAt: new Date().toISOString(),
+                pending: false,
+                jobId: msg.jobId,
+                manusTaskUrl: result.manusTaskUrl || msg.manusTaskUrl,
+              }
+              const next: ChatThread = {
+                ...th,
+                messages: [
+                  ...th.messages.filter((m) => m.id !== msg.id),
+                  finalMsg,
+                ],
+                updatedAt: new Date().toISOString(),
+              }
+              await upsertThread(next)
+              const refreshed = await loadThreads()
+              if (!cancelled) {
+                setThreads(refreshed)
+              }
+            } else if (result.status === 'failed') {
+              const errMsg: ChatMessage = {
+                id: newUuid(),
+                role: 'assistant',
+                content: `**Research failed:** ${result.error || 'unknown'}`,
+                createdAt: new Date().toISOString(),
+                pending: false,
+                jobId: msg.jobId,
+              }
+              const next: ChatThread = {
+                ...th,
+                messages: [
+                  ...th.messages.filter((m) => m.id !== msg.id),
+                  errMsg,
+                ],
+                updatedAt: new Date().toISOString(),
+              }
+              await upsertThread(next)
+              const refreshed = await loadThreads()
+              if (!cancelled) setThreads(refreshed)
+            }
+          } finally {
+            if (!cancelled) setBusy(false)
+          }
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const active = useMemo(
@@ -115,13 +221,25 @@ function ChatPage() {
     setBusy(true)
 
     try {
+      let skillValues: Record<string, string> | undefined
+      const slug = skillSlug || withUser.skillSlug
+      if (slug) {
+        try {
+          const draft = await loadSkillDraft({ data: { skillSlug: slug } })
+          if (draft.ok && draft.values) skillValues = draft.values
+        } catch {
+          /* no draft */
+        }
+      }
+
       const res = await runChat({
         data: {
           messages: withUser.messages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
-          skillSlug: skillSlug || withUser.skillSlug,
+          skillSlug: slug,
+          skillValues,
           profile: profileToPromptBlock(loadProfile()),
           settings: loadSettings(),
         },
@@ -139,6 +257,10 @@ function ChatPage() {
           content: res.content || '## Researching with Manus…',
           skillSlug: skillSlug || withUser.skillSlug,
           createdAt: new Date().toISOString(),
+          jobId: res.jobId,
+          pending: true,
+          manusTaskId: res.manusTaskId,
+          manusTaskUrl: res.manusTaskUrl,
         }
         let thread = {
           ...withUser,
@@ -147,78 +269,72 @@ function ChatPage() {
         }
         await persist(thread)
 
-        const jobId = res.jobId
-        const maxAttempts = 90 // ~4.5 min at 3s
-        for (let i = 0; i < maxAttempts; i++) {
-          await new Promise((r) => setTimeout(r, 3000))
-          const poll = await pollChatResearch({ data: { jobId } })
-          if (poll.status === 'completed' && poll.content) {
-            const finalMsg: ChatMessage = {
-              id: newUuid(),
-              role: 'assistant',
-              content: poll.content,
-              skillSlug: skillSlug || withUser.skillSlug,
-              createdAt: new Date().toISOString(),
-            }
-            // Replace pending placeholder with final answer
-            thread = {
-              ...thread,
-              messages: [
-                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
-                finalMsg,
-              ],
-              updatedAt: new Date().toISOString(),
-            }
-            await persist(thread)
-            break
+        const result = await waitForResearchJob(res.jobId)
+        if (result.status === 'completed') {
+          const finalMsg: ChatMessage = {
+            id: newUuid(),
+            role: 'assistant',
+            content: result.content || 'Research completed (empty output).',
+            skillSlug: skillSlug || withUser.skillSlug,
+            createdAt: new Date().toISOString(),
+            pending: false,
+            jobId: res.jobId,
+            manusTaskUrl: result.manusTaskUrl || res.manusTaskUrl,
           }
-          if (poll.status === 'failed') {
-            const errMsg: ChatMessage = {
-              id: newUuid(),
-              role: 'assistant',
-              content: `**Research failed:** ${poll.error || 'unknown'}`,
-              createdAt: new Date().toISOString(),
-            }
-            thread = {
-              ...thread,
-              messages: [
-                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
-                errMsg,
-              ],
-              updatedAt: new Date().toISOString(),
-            }
-            await persist(thread)
-            break
+          thread = {
+            ...thread,
+            messages: [
+              ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+              finalMsg,
+            ],
+            updatedAt: new Date().toISOString(),
           }
-          // still waiting — keep shimmer / pending message
-          if (i === maxAttempts - 1) {
-            const timeoutMsg: ChatMessage = {
-              id: newUuid(),
-              role: 'assistant',
-              content: [
-                '## Still waiting on Manus',
-                '',
-                poll.content || 'Timed out polling for results.',
-                res.manusTaskUrl
-                  ? `Open task: ${res.manusTaskUrl}`
-                  : '',
-              ]
-                .filter(Boolean)
-                .join('\n'),
-              createdAt: new Date().toISOString(),
-            }
-            thread = {
-              ...thread,
-              messages: [
-                ...thread.messages.filter((m) => m.id !== pendingMsg.id),
-                timeoutMsg,
-              ],
-              updatedAt: new Date().toISOString(),
-            }
-            await persist(thread)
+          await persist(thread)
+        } else if (result.status === 'failed') {
+          const errMsg: ChatMessage = {
+            id: newUuid(),
+            role: 'assistant',
+            content: `**Research failed:** ${result.error || 'unknown'}`,
+            createdAt: new Date().toISOString(),
+            pending: false,
+            jobId: res.jobId,
           }
+          thread = {
+            ...thread,
+            messages: [
+              ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+              errMsg,
+            ],
+            updatedAt: new Date().toISOString(),
+          }
+          await persist(thread)
+        } else {
+          // Keep pending message with jobId so refresh can resume
+          const stillMsg: ChatMessage = {
+            ...pendingMsg,
+            content: [
+              '## Researching with Manus…',
+              '',
+              `Task: `${res.manusTaskId || ''}\`${res.manusTaskUrl ? ` — [open in Manus](${res.manusTaskUrl})` : ''}`,
+              '',
+              'Still waiting. Keep this tab open, or refresh later — the job will resume automatically.',
+            ].join('
+'),
+            pending: true,
+            jobId: res.jobId,
+          }
+          thread = {
+            ...thread,
+            messages: [
+              ...thread.messages.filter((m) => m.id !== pendingMsg.id),
+              stillMsg,
+            ],
+            updatedAt: new Date().toISOString(),
+          }
+          await persist(thread)
         }
       } else {
+
         const assistant: ChatMessage = {
           id: newUuid(),
           role: 'assistant',

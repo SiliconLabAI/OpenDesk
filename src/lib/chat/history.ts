@@ -10,6 +10,11 @@ export type ChatMessage = {
   content: string
   skillSlug?: string
   createdAt: string
+  /** Manus research job — resume poll after refresh */
+  jobId?: string
+  pending?: boolean
+  manusTaskId?: string
+  manusTaskUrl?: string
 }
 
 export type ChatThread = {

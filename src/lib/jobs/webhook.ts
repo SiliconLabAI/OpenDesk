@@ -139,24 +139,76 @@ export async function handleManusWebhook(
     return { ok: true, detail: 'no supabase — acknowledged only' }
   }
 
-  const taskId =
+  const taskId = String(
     body.task_detail?.task_id ||
-    body.task_id ||
-    (body as { taskId?: string }).taskId
+      body.task_id ||
+      (body as { taskId?: string }).taskId ||
+      (body as { task_detail?: { id?: string } }).task_detail?.id ||
+      '',
+  ).trim()
   if (!taskId) {
+    await writeAppLog({
+      level: 'warn',
+      kind: 'webhook',
+      source: 'manus',
+      message: 'webhook without task_id',
+      request: { event_type: body.event_type, keys: Object.keys(body) },
+    })
     return { ok: true, detail: 'no task_id in payload' }
   }
 
   const sb = getServiceSupabase()
-  const { data: job } = await sb
+  let { data: job } = await sb
     .from('jobs')
     .select('*')
     .eq('manus_task_id', taskId)
     .maybeSingle()
 
+  // Fallback: newest waiting chat_research job (if Manus id format mismatch)
   if (!job) {
+    const { data: recent } = await sb
+      .from('jobs')
+      .select('*')
+      .eq('kind', 'chat_research')
+      .eq('status', 'waiting_manus')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (recent && recent.manus_task_id && String(recent.manus_task_id) === taskId) {
+      job = recent
+    }
+  }
+
+  await writeAppLog({
+    level: 'info',
+    kind: 'webhook',
+    source: 'manus',
+    message: `event ${body.event_type} task ${taskId} job=${job?.id || 'none'}`,
+    meta: {
+      task_id: taskId,
+      event_type: body.event_type,
+      job_id: job?.id,
+      job_kind: job?.kind,
+    },
+  })
+
+  if (!job) {
+    // Still acknowledge — may complete via client poll
+    await writeAppLog({
+      level: 'info',
+      kind: 'webhook',
+      source: 'manus',
+      message: `no job for task ${taskId}`,
+      meta: { task_id: taskId, event_type: body.event_type },
+    })
     return { ok: true, detail: 'no matching job' }
   }
+
+  const jobSettings = ((job.input || {}) as { settings?: { manusApiKey?: string } })
+    .settings
+  const manusCtx = jobSettings?.manusApiKey
+    ? { apiKey: jobSettings.manusApiKey }
+    : undefined
 
   const eventLog = Array.isArray(job.manus_event_log)
     ? [...job.manus_event_log]
@@ -188,7 +240,7 @@ export async function handleManusWebhook(
     const artifactUrls: string[] = []
 
     try {
-      const messages = await manusListMessages(taskId, 30, undefined, {
+      const messages = await manusListMessages(taskId, 50, manusCtx, {
         markdownFormat: 'markdown',
       })
       let extracted = extractManusResults(messages)

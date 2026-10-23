@@ -5,6 +5,7 @@ import { resolveSettings } from '~/lib/settings/resolve'
 import { getSkill, type SkillDef } from '~/lib/skills/catalog'
 import { doctrineFor, ETHICS_FLOOR } from '~/lib/skills/doctrine'
 import { enrichSkillInputs } from '~/lib/auto/research'
+import { loadSkillDraft } from '~/lib/skills/drafts'
 import {
   extractManusResults,
   hasManusConfig,
@@ -248,6 +249,16 @@ export const startChatResearch = createServerFn({ method: 'POST' })
     // --- Auto-fill empty skill inputs via LLM from profile + user message ---
     let skillValues: Record<string, string> = { ...(data.skillValues || {}) }
     if (skill) {
+      // Merge saved skill draft from Supabase
+      try {
+        const draft = await loadSkillDraft({ data: { skillSlug: skill.slug } })
+        if (draft.ok && draft.values) {
+          skillValues = { ...draft.values, ...skillValues }
+        }
+      } catch {
+        /* no draft */
+      }
+
       const base = Object.fromEntries(
         skill.inputs.map((i) => [i.id, skillValues[i.id] || '']),
       )
@@ -288,6 +299,15 @@ ${lastUser}`,
 ${skill.examples[inp.id]}`
         }
       }
+    }
+
+    if (data.skillSlug && !skill) {
+      await writeAppLog({
+        level: 'warn',
+        kind: 'chat',
+        source: 'startChatResearch',
+        message: `unknown skill slug: ${data.skillSlug}`,
+      })
     }
 
     const prompt = skill
@@ -541,6 +561,24 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
           ok: false as const,
           status: 'failed' as const,
           error: done.error,
+        }
+      }
+
+      // Terminal: if we have meaningful text (even partial), complete with it
+      if (terminal && researchText && researchText.length > 120 && !substantial) {
+        // Prefer completing with what we have rather than infinite wait
+        const done = await completeChatResearchJob(
+          data.jobId,
+          researchText,
+          job.manus_task_url || undefined,
+        )
+        if (done.ok) {
+          return {
+            ok: true as const,
+            status: 'completed' as const,
+            content: done.content || '',
+            manusTaskUrl: job.manus_task_url as string | undefined,
+          }
         }
       }
 

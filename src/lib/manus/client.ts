@@ -312,7 +312,7 @@ export function extractManusResults(listMessagesResponse: unknown): {
 /** True when text looks like finished research, not an intermediate ack. */
 export function isSubstantialManusResearch(text: string): boolean {
   const t = (text || '').trim()
-  if (t.length < 180) return false
+  if (t.length < 120) return false
   const lower = t.toLowerCase()
   // Intermediate agent chatter
   const ackPatterns = [
@@ -343,8 +343,10 @@ export function isSubstantialManusResearch(text: string): boolean {
     (t.match(/^[-*]\s/gm) || []).length >= 2 ||
     (t.match(/\n\d+\./g) || []).length >= 2
   if (hasUrl || hasOutletish) return true
-  if (t.length >= 500 && hasStructure) return true
-  if (t.length >= 900) return true
+  if (t.length >= 400 && hasStructure) return true
+  if (t.length >= 600) return true
+  // Report-like files often use ## headings without external URLs yet
+  if ((t.match(/^#{1,3}\s/gm) || []).length >= 2 && t.length >= 250) return true
   return false
 }
 
