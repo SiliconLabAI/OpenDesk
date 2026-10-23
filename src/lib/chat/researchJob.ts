@@ -11,6 +11,7 @@ import {
   manusCreateTask,
   manusGetTask,
   manusListMessages,
+  rewriteManusSandboxLinks,
 } from '~/lib/manus/client'
 import { getServiceSupabase, hasSupabaseConfig } from '~/lib/supabase/server'
 import { ensureDefaultOrg } from '~/lib/supabase/org'
@@ -72,6 +73,12 @@ export async function completeChatResearchJob(
     settings?: Partial<ProviderSettings>
   }
 
+  const taskId = (job.manus_task_id as string) || ''
+  const research = rewriteManusSandboxLinks(researchText, {
+    taskId,
+    taskUrl: taskUrl || (job.manus_task_url as string) || undefined,
+  })
+
   const settings = resolveSettings(input.settings)
   const skill = input.skillSlug ? getSkill(input.skillSlug) : undefined
   const profile = input.profile || ''
@@ -92,8 +99,10 @@ ${
 }
 
 ## Live research (Manus completed)
-${researchText}
+${research}
 ${taskUrl ? `\nManus task: ${taskUrl}` : ''}
+
+When citing downloads, keep full https://manus.im/app/... preview URLs (with previewSandboxPath). Never emit bare /home/ubuntu/... paths.
 
 Respond in clear markdown to the user's latest message using this research.`
 
@@ -104,14 +113,19 @@ Respond in clear markdown to the user's latest message using this research.`
 
   try {
     const { text, provider } = await callLlm(settings, system, user)
+    // Ensure any leftover sandbox paths become Manus preview URLs
+    const finalText = rewriteManusSandboxLinks(text, {
+      taskId,
+      taskUrl: taskUrl || (job.manus_task_url as string) || undefined,
+    })
     await sb
       .from('jobs')
       .update({
         status: 'completed',
-        output_text: text,
+        output_text: finalText,
         output: {
           provider,
-          research_preview: researchText.slice(0, 2000),
+          research_preview: research.slice(0, 2000),
           source: 'manus_callback_or_poll',
         },
         completed_at: new Date().toISOString(),
@@ -124,10 +138,10 @@ Respond in clear markdown to the user's latest message using this research.`
       source: 'completeChatResearchJob',
       message: `completed via ${provider}`,
       meta: { job_id: jobId },
-      response: { text_preview: text.slice(0, 500) },
+      response: { text_preview: finalText.slice(0, 500) },
     })
 
-    return { ok: true, content: text }
+    return { ok: true, content: finalText }
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e)
     await sb
@@ -356,9 +370,27 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
 
       // Prefer waiting until substantial research text exists
       if (substantial) {
+        const rewritten = rewriteManusSandboxLinks(researchText, {
+          taskId,
+          taskUrl: job.manus_task_url || undefined,
+          eventId: ((extracted as { eventIds?: string[] }).eventIds || [])[0],
+        })
+        // Append download links for sandbox files if not already in text
+        const paths = (extracted as { sandboxPaths?: string[] }).sandboxPaths || []
+        let researchBlock = rewritten
+        for (const sp of paths) {
+          if (!researchBlock.includes(sp) && !researchBlock.includes(encodeURIComponent(sp))) {
+            const link = rewriteManusSandboxLinks(sp, {
+              taskId,
+              taskUrl: job.manus_task_url || undefined,
+              eventId: ((extracted as { eventIds?: string[] }).eventIds || [])[0],
+            })
+            researchBlock += `\n\n[Download ${sp.split('/').pop()}](${link})`
+          }
+        }
         const done = await completeChatResearchJob(
           data.jobId,
-          researchText,
+          researchBlock,
           job.manus_task_url || undefined,
         )
         if (done.ok) {
@@ -405,7 +437,10 @@ export const pollChatResearch = createServerFn({ method: 'POST' })
           job.manus_task_url ? `Open: ${job.manus_task_url}` : '',
           '',
           '### Raw Manus text',
-          extracted.text || '(empty)',
+          rewriteManusSandboxLinks(extracted.text || '(empty)', {
+            taskId,
+            taskUrl: job.manus_task_url || undefined,
+          }),
           '',
           'I will not invent headlines. Retry research or open the Manus task for the full agent transcript.',
         ]

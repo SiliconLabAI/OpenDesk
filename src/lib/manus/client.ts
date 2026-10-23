@@ -179,6 +179,8 @@ export function extractManusResults(listMessagesResponse: unknown): {
   text: string
   allTexts?: string[]
   fileUrls: string[]
+  sandboxPaths?: string[]
+  eventIds?: string[]
   statusHints: string[]
   rawTypes: string[]
 } {
@@ -192,12 +194,25 @@ export function extractManusResults(listMessagesResponse: unknown): {
   const statusHints: string[] = []
   const rawTypes: string[] = []
 
-  const pushAttachments = (atts: unknown) => {
+  const eventIds: string[] = []
+  const sandboxPaths: string[] = []
+
+  const pushAttachments = (atts: unknown, eventId?: string) => {
     if (!Array.isArray(atts)) return
     for (const a of atts) {
       if (a && typeof a === 'object') {
-        const u = (a as { url?: string }).url
-        if (u) fileUrls.push(u)
+        const o = a as {
+          url?: string
+          path?: string
+          file_url?: string
+          filename?: string
+        }
+        if (o.url) fileUrls.push(o.url)
+        if (o.file_url) fileUrls.push(o.file_url)
+        if (o.path) {
+          sandboxPaths.push(o.path)
+          if (eventId) eventIds.push(eventId)
+        }
       }
     }
   }
@@ -225,7 +240,7 @@ export function extractManusResults(listMessagesResponse: unknown): {
           }
         }
       }
-      pushAttachments(am.attachments)
+      pushAttachments(am.attachments, typeof m.id === 'string' ? m.id : undefined)
     }
 
     if (type === 'structured_output_result' && m.structured_output_result) {
@@ -277,6 +292,8 @@ export function extractManusResults(listMessagesResponse: unknown): {
     text,
     allTexts: cleaned,
     fileUrls: [...new Set(fileUrls)],
+    sandboxPaths: [...new Set(sandboxPaths)],
+    eventIds: [...new Set(eventIds)],
     statusHints,
     rawTypes,
   }
@@ -324,6 +341,58 @@ export function isSubstantialManusResearch(text: string): boolean {
   if (t.length >= 500 && hasStructure) return true
   if (t.length >= 900) return true
   return false
+}
+
+
+/**
+ * Turn Manus sandbox paths (/home/ubuntu/...) into browser-openable preview URLs.
+ * Pattern: https://manus.im/app/{taskId}?previewEventId={eventId}&previewSandboxPath={encodedPath}
+ */
+export function rewriteManusSandboxLinks(
+  text: string,
+  opts: { taskId?: string; taskUrl?: string; eventId?: string },
+): string {
+  if (!text) return text
+  const taskId =
+    opts.taskId ||
+    (opts.taskUrl || '').match(/manus\.im\/app\/([^/?#]+)/)?.[1] ||
+    ''
+  if (!taskId) return text
+
+  const toPreview = (filePath: string, eventId?: string) => {
+    const path = filePath.startsWith('/') ? filePath : `/${filePath}`
+    const params = new URLSearchParams()
+    if (eventId || opts.eventId) {
+      params.set('previewEventId', eventId || opts.eventId || '')
+    }
+    params.set('previewSandboxPath', path)
+    return `https://manus.im/app/${taskId}?${params.toString()}`
+  }
+
+  let out = text
+
+  // Markdown links: [label](/home/ubuntu/...) or [label](home/ubuntu/...)
+  out = out.replace(
+    /\[([^\]]*)\]\((\/?(?:home\/ubuntu|tmp|workspace)\/[^)\s]+)\)/gi,
+    (_m, label: string, filePath: string) => {
+      const path = filePath.startsWith('/') ? filePath : `/${filePath}`
+      return `[${label}](${toPreview(path)})`
+    },
+  )
+
+  // Bare paths in text (not already inside a URL)
+  out = out.replace(
+    /(?<![\w:/])(\/(?:home\/ubuntu|tmp|workspace)\/[^\s)\]"'<>]+)/gi,
+    (filePath: string) => toPreview(filePath),
+  )
+
+  // Relative-looking sandbox paths without leading slash
+  out = out.replace(
+    /(?<![\w:/])((?:home\/ubuntu)\/[^\s)\]"'<>]+)/gi,
+    (filePath: string) => toPreview(`/${filePath}`),
+  )
+
+  return out
 }
 
 export async function manusRunAndWait(
